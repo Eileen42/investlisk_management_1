@@ -825,6 +825,74 @@ app.get('/api/ma10s', async (c) => {
   return c.json({ results, count: results.length, updatedAt: new Date().toISOString() })
 })
 
+// ── OHLCV 캔들 데이터 조회 (캔들스틱 차트용) ─────────
+// interval: 1d=일봉, 1wk=주봉, 1mo=월봉, 3mo=분기봉
+interface CandleBar { time: string; open: number; high: number; low: number; close: number }
+
+async function fetchOhlcData(ticker: string, interval: string): Promise<CandleBar[] | null> {
+  const validIntervals = ['1d', '1wk', '1mo', '3mo']
+  if (!validIntervals.includes(interval)) interval = '1mo'
+
+  const rangeMap: Record<string, string> = { '1d': '6mo', '1wk': '2y', '1mo': '3y', '3mo': '5y' }
+  const ttlMap:   Record<string, number>  = { '1d': 3*60*1000, '1wk': 30*60*1000, '1mo': CACHE_TTL_MA10, '3mo': CACHE_TTL_MA10 }
+
+  const cacheKey = `ohlc_${ticker}_${interval}`
+  const cached = getCached(cacheKey, ttlMap[interval] ?? CACHE_TTL)
+  if (cached) return cached as CandleBar[]
+
+  try {
+    const isKrTicker = /^\d{6}$/.test(ticker)
+    const yhTicker   = isKrTicker ? ticker + '.KS' : ticker
+    const range      = rangeMap[interval]
+
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yhTicker)}?interval=${interval}&range=${range}`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' }
+    })
+    if (!res.ok) return null
+
+    const json = await res.json() as {
+      chart?: { result?: Array<{
+        timestamp?: number[]
+        indicators?: { quote?: Array<{ open?: number[]; high?: number[]; low?: number[]; close?: number[] }> }
+      }>; error?: unknown }
+    }
+    const result = json?.chart?.result?.[0]
+    if (!result) return null
+
+    const timestamps = result.timestamp || []
+    const quote      = result.indicators?.quote?.[0]
+    if (!quote || timestamps.length === 0) return null
+
+    const round = (v: number) => isKrTicker ? Math.round(v) : parseFloat(v.toFixed(2))
+    const candles: CandleBar[] = []
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const o = quote.open?.[i], h = quote.high?.[i], l = quote.low?.[i], c = quote.close?.[i]
+      if (o == null || h == null || l == null || c == null || o <= 0 || h <= 0 || l <= 0 || c <= 0) continue
+      const d = new Date(timestamps[i] * 1000)
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+      candles.push({ time: dateStr, open: round(o), high: round(h), low: round(l), close: round(c) })
+    }
+
+    if (candles.length === 0) return null
+    setCache(cacheKey, candles)
+    return candles
+  } catch (_) { return null }
+}
+
+app.get('/api/chart', async (c) => {
+  const raw      = c.req.query('ticker')
+  const interval = c.req.query('interval') || '1mo'
+  if (!raw) return c.json({ error: 'ticker 파라미터가 필요합니다' }, 400)
+
+  const { ticker } = inferTicker(raw)
+  const candles = await fetchOhlcData(ticker, interval)
+  if (!candles) return c.json({ error: '차트 데이터 조회 실패', ticker }, 404)
+
+  return c.json({ ticker, interval, candles, count: candles.length, updatedAt: new Date().toISOString() })
+})
+
 // ── HTML 서빙 ─────────────────────────────────────
 app.get('/', (c) => c.html(indexHtml))
 app.notFound((c) => c.html(indexHtml))

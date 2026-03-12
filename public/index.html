@@ -8,8 +8,8 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
 <!-- Google Identity Services (GIS) - gapi 없이 순수 fetch 방식 -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<!-- Chart.js (미니 차트용) -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Lightweight Charts (TradingView, 캔들스틱 차트) -->
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;900&display=swap');
 *{font-family:'Noto Sans KR',sans-serif;}
@@ -123,7 +123,12 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
 .signal-panel-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#94a3b8;text-align:center;padding:40px 20px;}
 .signal-panel-empty i{font-size:36px;margin-bottom:12px;opacity:.35;}
 .signal-detail-box{padding:0;}
-.mini-chart-wrap{position:relative;width:100%;height:160px;}
+.mini-chart-wrap{position:relative;width:100%;height:auto;}
+.lw-chart-container{height:300px;width:100%;}
+.chart-ctrl-btn{border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s;}
+.chart-ctrl-btn.active{background:#1d4ed8;color:white;}
+.chart-ctrl-btn.inactive{background:#f1f5f9;color:#64748b;}
+.chart-ctrl-btn.inactive:hover{background:#e2e8f0;}
 /* ── 10이평선 통제탑 자동로딩 ── */
 .ma10-loading{display:flex;align-items:center;gap:6px;font-size:12px;color:#94a3b8;}
 .ma10-auto-val{font-weight:700;color:#1e293b;}
@@ -1299,7 +1304,12 @@ function getPhaseAction(phase) {
 // 대시보드
 // ────────────────────────────────────────────
 var _selectedStockIdx = -1;   // 대시보드에서 선택된 종목 인덱스
-var _signalChartInst  = null; // Chart.js 인스턴스
+var _lwChart       = null;  // Lightweight Charts 인스턴스
+var _lwCandle      = null;  // 캔들스틱 시리즈
+var _lwSmaLines    = {};    // { period: lineSeries } SMA 라인들
+var _chartInterval = '1mo'; // 현재 선택된 기간
+var _chartSmaList  = [10];  // 표시 중인 SMA 기간 목록 (기본: 10)
+var _chartStockRef = null;  // 현재 차트 종목 객체
 var _weedFilterActive = false; // 잡초 필터 토글 상태
 
 function toggleWeedFilter() {
@@ -1480,9 +1490,9 @@ function renderSignalPanel(s) {
           +'</div>'
         : '<div class="bg-amber-50 border border-amber-200 rounded-xl p-2.5 mb-3 text-xs text-amber-700">⚠️ 적용 부적합 – 개별주식은 10이평선 전략 적용이 어려워요</div>'
       )
-      // 미니 차트
-      +'<div id="signalMiniChartWrap" class="mini-chart-wrap bg-slate-50 rounded-xl p-2">'
-        +'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;">'
+      // 미니 차트 (Lightweight Charts 캔들스틱)
+      +'<div id="signalMiniChartWrap" class="mini-chart-wrap" style="background:#f8fafc;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">'
+        +'<div style="display:flex;align-items:center;justify-content:center;height:320px;color:#94a3b8;font-size:12px;">'
           +(s.ticker ? '<i class="fas fa-spinner spin mr-1"></i> 차트 로딩 중...' : '<i class="fas fa-chart-bar mr-1"></i> Ticker 없음')
         +'</div>'
       +'</div>'
@@ -1546,102 +1556,178 @@ function refreshPhaseBlock(s) {
     +etfSellWarn;
 }
 
-/* 미니 차트 로드 */
-function loadMiniChart(s) {
+/* ── 차트 SMA 계산 ── */
+function calcSmaData(candles, period) {
+  // 캔들 배열에서 종가만 뽑아 이동평균선 계산
+  var result = [];
+  for (var i = period - 1; i < candles.length; i++) {
+    var sum = 0;
+    for (var j = i - period + 1; j <= i; j++) sum += candles[j].close;
+    result.push({ time: candles[i].time, value: parseFloat((sum / period).toFixed(4)) });
+  }
+  return result;
+}
+
+/* SMA 기간별 색상 */
+function getSmaColor(period) {
+  var palette = { 5:'#22c55e', 10:'#f59e0b', 20:'#a855f7', 60:'#ef4444', 120:'#0ea5e9', 200:'#64748b' };
+  return palette[period] || '#94a3b8';
+}
+
+/* 차트 컨트롤 HTML 렌더 */
+function buildChartControls() {
+  var ivs = [['1d','일'],['1wk','주'],['1mo','월'],['3mo','년']];
+  var btnHtml = ivs.map(function(iv) {
+    var act = _chartInterval === iv[0];
+    return '<button onclick="changeChartInterval(\''+iv[0]+'\')" class="chart-ctrl-btn '+(act?'active':'inactive')+'">'+iv[1]+'</button>';
+  }).join('');
+
+  var tagHtml = _chartSmaList.map(function(p) {
+    var col = getSmaColor(p);
+    return '<span style="display:inline-flex;align-items:center;gap:3px;background:'+col+'20;color:'+col+';border:1px solid '+col+'55;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700;">'
+      +'SMA'+p
+      +'<span onclick="removeSmaLine('+p+')" style="cursor:pointer;margin-left:1px;font-weight:900;">×</span>'
+      +'</span>';
+  }).join('');
+
+  return '<div id="chartCtrlBar" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:5px;padding:7px 10px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;">'
+    +'<div style="display:flex;gap:3px;">'+btnHtml+'</div>'
+    +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">'
+      +'<div id="smaTagList" style="display:flex;gap:3px;flex-wrap:wrap;">'+tagHtml+'</div>'
+      +'<div style="display:flex;align-items:center;gap:3px;">'
+        +'<span style="font-size:10px;color:#64748b;font-weight:600;">SMA</span>'
+        +'<input id="smaAddInput" type="number" value="20" min="2" max="200" style="width:42px;border:1.5px solid #e2e8f0;border-radius:6px;padding:2px 5px;font-size:11px;text-align:center;">'
+        +'<button onclick="addSmaLine()" style="background:#0f172a;color:white;border:none;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:700;cursor:pointer;">+</button>'
+      +'</div>'
+    +'</div>'
+  +'</div>'
+  +'<div id="lwChartCanvas" class="lw-chart-container"></div>';
+}
+
+/* 기간 버튼 클릭 */
+function changeChartInterval(interval) {
+  _chartInterval = interval;
+  var wrap = document.getElementById('signalMiniChartWrap');
+  if (wrap) wrap.innerHTML = buildChartControls();
+  if (_chartStockRef) fetchAndRenderChart(_chartStockRef);
+}
+
+/* SMA 선 추가 */
+function addSmaLine() {
+  var inp = document.getElementById('smaAddInput');
+  var p = parseInt(inp ? inp.value : '20', 10);
+  if (!p || p < 2 || p > 200 || _chartSmaList.indexOf(p) >= 0) return;
+  _chartSmaList.push(p);
+  changeChartInterval(_chartInterval);
+}
+
+/* SMA 선 제거 */
+function removeSmaLine(period) {
+  _chartSmaList = _chartSmaList.filter(function(p) { return p !== period; });
+  changeChartInterval(_chartInterval);
+}
+
+/* 차트 데이터 조회 + 렌더링 */
+function fetchAndRenderChart(s) {
+  if (!s || !s.ticker) return;
+  var canvas = document.getElementById('lwChartCanvas');
+  if (!canvas) return;
+  canvas.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;"><i class="fas fa-spinner spin mr-1"></i> 데이터 로딩 중...</div>';
+
+  // ma10/smaPrev 데이터도 병행 갱신 (기존 로직 유지)
   fetch('/api/ma10?ticker=' + encodeURIComponent(s.ticker))
-    .then(function(r){ return r.json(); })
-    .then(function(data) {
-      if (!data.monthlyCloses || data.monthlyCloses.length < 2) return;
-
-      // 10이평선 데이터 업데이트
-      if (data.ma10 != null && (s.ma10 !== data.ma10 || !s.monthEndPrice)) {
-        s.ma10 = data.ma10;
-        if (data.smaPrev != null) s.smaPrev = data.smaPrev;
-        if (data.currentMonthClose) s.monthEndPrice = data.currentMonthClose;
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ma10 != null) {
+        s.ma10 = d.ma10;
+        if (d.smaPrev != null) s.smaPrev = d.smaPrev;
+        if (d.currentMonthClose) s.monthEndPrice = d.currentMonthClose;
         scheduleSave();
-        // 패널 내 숫자 갱신 (리렌더 없이)
-        var wrap = document.getElementById('signalMiniChartWrap');
-        if (!wrap) return;
-      }
-
-      var wrap = document.getElementById('signalMiniChartWrap');
-      if (!wrap) return;
-      wrap.innerHTML = '<canvas id="signalMiniChart"></canvas>';
-      var ctx = document.getElementById('signalMiniChart');
-      if (!ctx) return;
-
-      var closes = data.monthlyCloses;
-      var labels  = closes.map(function(p){ return p.date; });
-      var prices  = closes.map(function(p){ return p.close; });
-
-      // 이동평균선 계산 (표시용)
-      var ma10Line = prices.map(function(_, i, arr) {
-        if (i < 9) return null;
-        var sum = 0; for (var j = i-9; j <= i; j++) sum += arr[j];
-        return parseFloat((sum/10).toFixed(2));
-      });
-
-      if (_signalChartInst) { try { _signalChartInst.destroy(); } catch(e){} _signalChartInst = null; }
-
-      _signalChartInst = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: labels,
-          datasets: [
-            {
-              type: 'line',
-              label: '월봉 종가',
-              data: prices,
-              borderColor: '#3b82f6',
-              backgroundColor: 'rgba(59,130,246,0.08)',
-              borderWidth: 2,
-              pointRadius: 2,
-              pointBackgroundColor: '#3b82f6',
-              tension: 0.3,
-              fill: true,
-              order: 2
-            },
-            {
-              type: 'line',
-              label: '10이평선',
-              data: ma10Line,
-              borderColor: '#f59e0b',
-              backgroundColor: 'transparent',
-              borderWidth: 2,
-              pointRadius: 0,
-              tension: 0.3,
-              fill: false,
-              order: 1
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: function(ctx2) {
-                  if (ctx2.dataset.label === '10이평선' && ctx2.raw == null) return null;
-                  return ctx2.dataset.label + ': ' + (ctx2.raw||0).toLocaleString('ko-KR');
-                }
-              }
-            }
-          },
-          scales: {
-            x: { ticks: { font: { size: 9 }, maxRotation: 45, minRotation: 30 }, grid: { display: false } },
-            y: { ticks: { font: { size: 9 }, callback: function(v){ return v >= 1000 ? (v/1000).toFixed(0)+'K' : v; } }, grid: { color: 'rgba(0,0,0,0.05)' } }
-          }
-        }
-      });
-
-      // 패널 내 phase 블록만 갱신 (무한루프 방지)
-      if (_selectedStockIdx >= 0 && appData.stocks[_selectedStockIdx] === s) {
-        refreshPhaseBlock(s);
+        if (_selectedStockIdx >= 0 && appData.stocks[_selectedStockIdx] === s) refreshPhaseBlock(s);
       }
     })
-    .catch(function(){});
+    .catch(function() {});
+
+  // OHLCV 캔들 데이터 조회
+  fetch('/api/chart?ticker=' + encodeURIComponent(s.ticker) + '&interval=' + _chartInterval)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.candles || data.candles.length < 5) {
+        var c = document.getElementById('lwChartCanvas');
+        if (c) c.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:12px;">데이터가 부족합니다</div>';
+        return;
+      }
+      renderLwChart(data.candles);
+    })
+    .catch(function() {
+      var c = document.getElementById('lwChartCanvas');
+      if (c) c.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;font-size:12px;">차트 로드 실패</div>';
+    });
+}
+
+/* Lightweight Charts 캔들스틱 렌더 */
+function renderLwChart(candles) {
+  var container = document.getElementById('lwChartCanvas');
+  if (!container || typeof LightweightCharts === 'undefined') return;
+  container.innerHTML = '';
+
+  // 기존 인스턴스 제거
+  if (_lwChart) { try { _lwChart.remove(); } catch(e){} _lwChart = null; _lwCandle = null; _lwSmaLines = {}; }
+
+  _lwChart = LightweightCharts.createChart(container, {
+    width: container.clientWidth || 300,
+    height: container.offsetHeight || 300,
+    layout: { background: { type: 'solid', color: '#ffffff' }, textColor: '#475569', fontSize: 11 },
+    grid: { vertLines: { color: '#f1f5f9' }, horzLines: { color: '#f1f5f9' } },
+    crosshair: { mode: 1 },
+    rightPriceScale: { borderColor: '#e2e8f0', scaleMargins: { top: 0.08, bottom: 0.08 } },
+    timeScale: { borderColor: '#e2e8f0', timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true }
+  });
+
+  // 캔들스틱 (한국식: 빨간=상승, 파란=하락)
+  _lwCandle = _lwChart.addCandlestickSeries({
+    upColor: '#dc2626', downColor: '#2563eb',
+    borderUpColor: '#dc2626', borderDownColor: '#2563eb',
+    wickUpColor: '#dc2626', wickDownColor: '#2563eb'
+  });
+  _lwCandle.setData(candles);
+
+  // SMA 선들
+  _lwSmaLines = {};
+  _chartSmaList.forEach(function(period) {
+    var smaData = calcSmaData(candles, period);
+    if (smaData.length === 0) return;
+    var series = _lwChart.addLineSeries({
+      color: getSmaColor(period), lineWidth: 2,
+      priceLineVisible: false, lastValueVisible: true,
+      title: 'SMA' + period, crosshairMarkerVisible: false
+    });
+    series.setData(smaData);
+    _lwSmaLines[period] = series;
+  });
+
+  _lwChart.timeScale().fitContent();
+
+  // 컨테이너 크기 변경 시 차트도 같이 리사이즈
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(function() {
+      if (_lwChart && container.clientWidth > 50) {
+        _lwChart.applyOptions({ width: container.clientWidth });
+      }
+    });
+    ro.observe(container);
+  }
+}
+
+/* 미니 차트 로드 (renderSignalPanel에서 호출) */
+function loadMiniChart(s) {
+  _chartStockRef = s;
+  var wrap = document.getElementById('signalMiniChartWrap');
+  if (!wrap || !s.ticker) return;
+
+  // 컨트롤 바 + 차트 캔버스 삽입
+  wrap.innerHTML = buildChartControls();
+  fetchAndRenderChart(s);
 }
 
 // ────────────────────────────────────────────
