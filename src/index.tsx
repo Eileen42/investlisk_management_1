@@ -462,6 +462,128 @@ app.get('/api/exchange-rate', async (c) => {
   return c.json({ usdKrw: rate, updatedAt: new Date().toISOString() })
 })
 
+// ── 10개월 월봉 종가 + SMA10 ──────────────────────
+// 캐시 TTL: 1시간 (월봉 데이터는 자주 변하지 않음)
+const CACHE_TTL_MA10 = 60 * 60 * 1000
+
+interface Ma10Result {
+  ticker: string
+  monthlyCloses: Array<{ date: string; close: number }>
+  ma10: number | null
+  currentMonthClose: number | null
+  marketState: string
+  signal: 'bull' | 'bear' | null
+}
+
+async function fetchMa10Data(ticker: string): Promise<Ma10Result | null> {
+  const cacheKey = `ma10_${ticker}`
+  const cached = getCached(cacheKey, CACHE_TTL_MA10)
+  if (cached) return cached as Ma10Result
+
+  try {
+    const isKrTicker = /^\d{6}$/.test(ticker)
+    const yhTicker = isKrTicker ? ticker + '.KS' : ticker
+
+    // Yahoo Finance v8 chart API - 2년치 월봉 데이터
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yhTicker)}?interval=1mo&range=2y`
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+      }
+    })
+    if (!res.ok) return null
+
+    const json = await res.json() as {
+      chart?: {
+        result?: Array<{
+          meta?: { regularMarketPrice?: number; currency?: string; marketState?: string }
+          timestamp?: number[]
+          indicators?: { adjclose?: Array<{ adjclose?: number[] }>; quote?: Array<{ close?: number[] }> }
+        }>
+        error?: unknown
+      }
+    }
+
+    const result = json?.chart?.result?.[0]
+    if (!result) return null
+
+    const meta = result.meta
+    const timestamps = result.timestamp || []
+    // adjclose가 있으면 우선 사용, 없으면 quote.close
+    const closes = result.indicators?.adjclose?.[0]?.adjclose
+      ?? result.indicators?.quote?.[0]?.close
+      ?? []
+
+    if (timestamps.length === 0 || closes.length === 0) return null
+
+    // 유효한 종가만 추출
+    const pairs: Array<{ date: string; close: number }> = []
+    for (let i = 0; i < Math.min(timestamps.length, closes.length); i++) {
+      const cl = closes[i]
+      if (cl == null || cl <= 0) continue
+      const d = new Date(timestamps[i] * 1000)
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      pairs.push({ date: dateStr, close: isKrTicker ? Math.round(cl) : parseFloat(cl.toFixed(2)) })
+    }
+
+    if (pairs.length === 0) return null
+
+    // 최근 10개월만 사용
+    const last10 = pairs.slice(-10)
+    const ma10 = last10.length === 10
+      ? parseFloat((last10.reduce((s, p) => s + p.close, 0) / 10).toFixed(isKrTicker ? 0 : 2))
+      : null
+
+    // 이번 달 말일 종가 = 가장 마지막 월봉 종가
+    const currentMonthClose = pairs[pairs.length - 1]?.close ?? null
+    const marketState = meta?.marketState ?? 'CLOSED'
+    const signal: 'bull' | 'bear' | null =
+      ma10 != null && currentMonthClose != null
+        ? (currentMonthClose > ma10 ? 'bull' : 'bear')
+        : null
+
+    const res2: Ma10Result = {
+      ticker,
+      monthlyCloses: pairs.slice(-13), // 최근 13개월 반환 (차트용)
+      ma10,
+      currentMonthClose,
+      marketState,
+      signal
+    }
+    setCache(cacheKey, res2)
+    return res2
+  } catch (_) { return null }
+}
+
+// ── 10이평선 데이터 API ───────────────────────────
+app.get('/api/ma10', async (c) => {
+  const raw = c.req.query('ticker')
+  if (!raw) return c.json({ error: 'ticker 파라미터가 필요합니다' }, 400)
+
+  const { ticker } = inferTicker(raw)
+  const data = await fetchMa10Data(ticker)
+  if (!data) return c.json({ error: `${ticker} 10이평선 데이터 조회 실패`, ticker }, 404)
+
+  return c.json({ ...data, updatedAt: new Date().toISOString() })
+})
+
+// ── 다중 10이평선 데이터 API ─────────────────────
+app.get('/api/ma10s', async (c) => {
+  const raw = c.req.query('tickers')
+  if (!raw) return c.json({ error: 'tickers 파라미터가 필요합니다 (콤마 구분)' }, 400)
+  const rawList = raw.split(',').map(s => s.trim()).filter(Boolean)
+  if (rawList.length > 20) return c.json({ error: '최대 20개까지 가능합니다' }, 400)
+
+  const results = await Promise.all(rawList.map(async (r) => {
+    const { ticker } = inferTicker(r)
+    const data = await fetchMa10Data(ticker)
+    return data ? { ...data, originalTicker: r } : { ticker, originalTicker: r, error: '조회 실패', ma10: null, currentMonthClose: null, signal: null }
+  }))
+
+  return c.json({ results, count: results.length, updatedAt: new Date().toISOString() })
+})
+
 // ── HTML 서빙 ─────────────────────────────────────
 app.get('/', (c) => c.html(indexHtml))
 app.notFound((c) => c.html(indexHtml))
