@@ -62,6 +62,8 @@ td select{padding:7px 10px;}
 ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
 ::-webkit-scrollbar-thumb:hover{background:#94a3b8;}
 .empty-state{text-align:center;padding:60px 20px;color:#94a3b8;}
+.weed-highlight{background:linear-gradient(135deg,#fef9f0,#fef3c7)!important;border:1.5px solid #fcd34d!important;}
+.weed-filter-active{box-shadow:0 0 0 2px #f59e0b,0 2px 12px rgba(245,158,11,.2);}
 .empty-state i{font-size:48px;margin-bottom:16px;opacity:.4;}
 .login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;}
 .sync-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
@@ -326,14 +328,14 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
         <div class="stat-card"><div class="flex items-center justify-between mb-2"><span class="text-xs font-medium text-slate-500">총 투자 원금</span><div class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><i class="fas fa-coins text-blue-500 text-sm"></i></div></div><div class="text-2xl font-black text-slate-800" id="dash-total-invest">-</div><div class="text-xs text-slate-400 mt-1">내가 넣은 총 금액</div></div>
         <div class="stat-card"><div class="flex items-center justify-between mb-2"><span class="text-xs font-medium text-slate-500">현재 평가 금액</span><div class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center"><i class="fas fa-chart-bar text-indigo-500 text-sm"></i></div></div><div class="text-2xl font-black text-slate-800" id="dash-total-eval">-</div><div class="text-xs text-slate-400 mt-1">지금 팔면 받는 금액</div></div>
         <div class="stat-card"><div class="flex items-center justify-between mb-2"><span class="text-xs font-medium text-slate-500">총 수익/손실</span><div class="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center"><i class="fas fa-chart-area text-red-500 text-sm"></i></div></div><div class="text-2xl font-black" id="dash-total-profit">-</div><div class="text-xs text-slate-400 mt-1" id="dash-profit-rate">수익률 계산 중</div></div>
-        <div class="stat-card"><div class="flex items-center justify-between mb-2"><span class="text-xs font-medium text-slate-500">잡초 종목</span><div class="w-8 h-8 rounded-lg bg-orange-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-orange-500 text-sm"></i></div></div><div class="text-2xl font-black text-orange-500" id="dash-weed-count">-</div><div class="text-xs text-slate-400 mt-1">정리 검토 필요 종목</div></div>
+        <div class="stat-card" id="weedStatCard" onclick="toggleWeedFilter()" style="cursor:pointer;" title="클릭하면 잡초 종목을 하이라이트해요"><div class="flex items-center justify-between mb-2"><span class="text-xs font-medium text-slate-500">잡초 종목</span><div class="w-8 h-8 rounded-lg bg-orange-50 flex items-center justify-center"><i class="fas fa-exclamation-triangle text-orange-500 text-sm"></i></div></div><div class="text-2xl font-black text-orange-500" id="dash-weed-count">-</div><div class="text-xs text-slate-400 mt-1" id="weedFilterLabel">클릭하면 하이라이트</div></div>
       </div>
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
         <div class="lg:col-span-2 card p-6">
           <div class="flex items-center justify-between mb-4"><h2 class="text-base font-bold text-slate-800 flex items-center gap-2"><i class="fas fa-briefcase text-blue-500"></i> 보유 종목 현황</h2><button onclick="showSection('master')" class="text-xs text-blue-500 hover:text-blue-700 font-medium">관리하기 →</button></div>
           <div id="dash-stock-list" class="stock-list-box"><div class="empty-state"><i class="fas fa-seedling block"></i><p class="font-medium">아직 종목이 없어요</p><p class="text-sm mt-1">마스터 데이터에서 종목을 추가하세요</p></div></div>
         </div>
-        <div class="card p-6 flex flex-col">
+        <div class="lg:col-span-3 card p-6 flex flex-col">
           <div class="flex items-center justify-between mb-4"><h2 class="text-base font-bold text-slate-800 flex items-center gap-2"><i class="fas fa-bell text-amber-500"></i> 이번 달 신호</h2><button onclick="showSection('signal')" class="text-xs text-blue-500 hover:text-blue-700 font-medium">상세 →</button></div>
           <div id="dash-signal-list" class="flex-1"><div class="signal-panel-empty"><i class="fas fa-mouse-pointer"></i><p class="font-medium text-sm">왼쪽 목록에서<br/>종목을 클릭하세요</p><p class="text-xs mt-1 text-slate-400">현재가, 10이평, 차트를 볼 수 있어요</p></div></div>
         </div>
@@ -728,12 +730,7 @@ var isSyncing     = false;
 // ────────────────────────────────────────────
 function fmtNum(n) {
   if (n === null || n === undefined || n === '' || isNaN(Number(n))) return '-';
-  var num = Number(n);
-  if (Number.isInteger(num)) return num.toLocaleString('ko-KR');
-  var s = num.toFixed(4).replace(/[.]?0+$/, '');
-  var parts = s.split('.');
-  parts[0] = parseInt(parts[0], 10).toLocaleString('ko-KR');
-  return parts.join('.');
+  return Math.round(Number(n)).toLocaleString('ko-KR');
 }
 function fmtRate(r) {
   if (r === null || r === undefined || r === '' || isNaN(Number(r))) return '-';
@@ -1223,6 +1220,21 @@ function calcMonthly(s) {
 // ────────────────────────────────────────────
 var _selectedStockIdx = -1;   // 대시보드에서 선택된 종목 인덱스
 var _signalChartInst  = null; // Chart.js 인스턴스
+var _weedFilterActive = false; // 잡초 필터 토글 상태
+
+function toggleWeedFilter() {
+  _weedFilterActive = !_weedFilterActive;
+  var card = document.getElementById('weedStatCard');
+  var label = document.getElementById('weedFilterLabel');
+  if (_weedFilterActive) {
+    card.classList.add('weed-filter-active');
+    if (label) label.textContent = '🌿 하이라이트 ON (클릭 해제)';
+  } else {
+    card.classList.remove('weed-filter-active');
+    if (label) label.textContent = '클릭하면 하이라이트';
+  }
+  renderDashboard();
+}
 
 function renderDashboard() {
   var stocks=appData.stocks, now=new Date();
@@ -1247,17 +1259,18 @@ function renderDashboard() {
     listEl.innerHTML='<div>'+stocks.map(function(s,i){
       var c=calcStock(s), w=getWeed(s);
       var isSelected = i === _selectedStockIdx;
-      return '<div class="stock-list-item'+(isSelected?' selected':'')+'" onclick="selectDashStock('+i+')" data-sidx="'+i+'">'
+      var isWeed = w === 'yes';
+      var weedActive = _weedFilterActive && isWeed;
+      return '<div class="stock-list-item'+(isSelected?' selected':'')+(weedActive?' weed-highlight':'')+'" onclick="selectDashStock('+i+')" data-sidx="'+i+'">'
         +'<div class="flex items-center gap-2 min-w-0">'
           +'<div class="w-7 h-7 rounded-lg '+(s.type==='시장지수ETF'?'bg-blue-100 text-blue-600':'bg-slate-100 text-slate-500')+' flex items-center justify-center text-xs font-bold flex-shrink-0">'+s.name.substring(0,2)+'</div>'
-          +'<div class="min-w-0"><div class="font-semibold text-slate-700 text-sm truncate">'+s.name+'</div><div class="text-xs text-slate-400">'+s.broker+'</div></div>'
+          +'<div class="min-w-0"><div class="font-semibold text-slate-700 text-sm truncate">'+s.name+(weedActive?' 🌿':'')+'</div><div class="text-xs text-slate-400">'+s.broker+'</div></div>'
         +'</div>'
         +'<div class="text-right flex-shrink-0 ml-2">'
           +'<div class="text-sm font-bold '+(c.profit>=0?'profit':'loss')+'">'+fmtRate(c.rate)+'</div>'
           +'<div class="text-xs '+(c.profit>=0?'text-red-400':'text-blue-400')+'">'+(c.profit>=0?'+':'')+'₩'+fmtNum(Math.abs(c.profit))+'</div>'
         +'</div>'
-        +(w==='yes'?'<span class="weed-yes ml-2 flex-shrink-0">🌿</span>':'')+
-      '</div>';
+      +'</div>';
     }).join('')+'</div>';
   }
 
@@ -1320,8 +1333,31 @@ function renderSignalPanel(s) {
       : '<div class="text-sm font-bold text-red-700 mt-1">🛑 매수 중단</div>';
   }
 
+  // ── 실시간 현재가 vs 10이평선 뱃지 (최상단) ──
+  var curPrice = s.curPrice || 0;
+  var liveStatusBlock = '';
+  if (ma10Val > 0 && curPrice > 0) {
+    var curAbove = curPrice > ma10Val;
+    var diff = Math.round(Math.abs(curPrice - ma10Val));
+    var dirText = curAbove ? '높습니다' : '낮습니다';
+    var diffDesc = '현재가(₩'+fmtNum(Math.round(curPrice))+')가 10이평선(₩'+fmtNum(Math.round(ma10Val))+')보다 ₩'+fmtNum(diff)+' '+dirText;
+    var liveBadgeHtml = curAbove
+      ? '<span style="display:inline-block;background:#dcfce7;color:#15803d;border-radius:20px;padding:7px 18px;font-weight:800;font-size:14px;">🟢 10이평선 위 (안전)</span>'
+      : '<span style="display:inline-block;background:#fef2f2;color:#dc2626;border-radius:20px;padding:7px 18px;font-weight:800;font-size:14px;">🔴 10이평선 아래 (위험)</span>';
+    var sellWarnHtml = (isEtf && !curAbove)
+      ? '<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#dc2626;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
+      : '';
+    liveStatusBlock =
+      '<div style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:14px;padding:14px 16px;margin-bottom:12px;">'
+        +'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+liveBadgeHtml+'</div>'
+        +'<div style="font-size:12px;color:#64748b;text-align:center;">'+diffDesc+'</div>'
+        +sellWarnHtml
+      +'</div>';
+  }
+
   se.innerHTML =
     '<div class="signal-detail-box">'
+      +liveStatusBlock
       // 종목명 헤더
       +'<div class="flex items-center gap-2 pb-3 mb-3 border-b border-slate-100">'
         +'<div class="w-8 h-8 rounded-lg '+(isEtf?'bg-blue-100 text-blue-600':'bg-slate-100 text-slate-500')+' flex items-center justify-center text-sm font-bold">'+s.name.substring(0,2)+'</div>'
