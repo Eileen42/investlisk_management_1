@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import indexHtml from '../public/index.html'
+import indexHtml from '../public/index.html?raw'
 
 const app = new Hono()
 app.use('/api/*', cors())

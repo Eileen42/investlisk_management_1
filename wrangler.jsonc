@@ -2,11 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "investliskmanagement01",
   "compatibility_date": "2026-03-12",
-  "main": "src/index.tsx",
+  "pages_build_output_dir": "./dist",
   "compatibility_flags": [
     "nodejs_compat"
-  ],
-  "rules": [
-    { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }
   ]
 }
