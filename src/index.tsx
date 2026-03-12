@@ -79,7 +79,7 @@ function getMainHTML(): string {
     /* 가이드 스텝 */
     .step-num { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
 
-    /* 모달 */
+    /* 모달: 저장/취소 버튼으로만 닫힘 (규칙1) */
     .modal-bg { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
     .modal-box { background: white; border-radius: 20px; padding: 32px; width: 90%; max-width: 520px; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
 
@@ -680,11 +680,13 @@ function getMainHTML(): string {
 <!-- ============================= -->
 <!-- 모달: 종목 추가/수정 -->
 <!-- ============================= -->
-<div id="addModal" class="modal-bg" style="display:none;" onclick="closeModalOnBg(event)">
-  <div class="modal-box" onclick="event.stopPropagation()">
+<div id="addModal" class="modal-bg" style="display:none;">
+  <div class="modal-box">
     <div class="flex items-center justify-between mb-5">
       <h3 class="text-lg font-black text-slate-800" id="modalTitle">📌 종목 추가</h3>
-      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+      <div class="text-xs text-slate-400 bg-slate-100 px-2.5 py-1.5 rounded-lg flex items-center gap-1">
+        <i class="fas fa-lock text-slate-400"></i> 저장 또는 취소로만 닫기
+      </div>
     </div>
 
     <div class="space-y-4">
@@ -712,15 +714,21 @@ function getMainHTML(): string {
       <div class="grid grid-cols-3 gap-3">
         <div>
           <label class="text-xs font-semibold text-slate-600 mb-1 block">평균매수단가 <span class="text-red-500">*</span></label>
-          <input type="number" id="input-avgprice" placeholder="예: 520" class="w-full" min="0" />
+          <input type="text" id="input-avgprice" placeholder="예: 520" class="w-full"
+            onfocus="this.value=this.value.replace(/,/g,'')"
+            onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }" />
         </div>
         <div>
           <label class="text-xs font-semibold text-slate-600 mb-1 block">현재주가 <span class="text-red-500">*</span></label>
-          <input type="number" id="input-curprice" placeholder="예: 580" class="w-full" min="0" />
+          <input type="text" id="input-curprice" placeholder="예: 580" class="w-full"
+            onfocus="this.value=this.value.replace(/,/g,'')"
+            onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }" />
         </div>
         <div>
           <label class="text-xs font-semibold text-slate-600 mb-1 block">보유수량 <span class="text-red-500">*</span></label>
-          <input type="number" id="input-qty" placeholder="예: 10" class="w-full" min="0" />
+          <input type="text" id="input-qty" placeholder="예: 10" class="w-full"
+            onfocus="this.value=this.value.replace(/,/g,'')"
+            onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }" />
         </div>
       </div>
 
@@ -794,26 +802,65 @@ function showSection(name) {
 }
 
 // ===========================
+// 최상위 규칙
+// 규칙1: 팝업은 저장/취소 버튼으로만 닫힌다 (배경클릭·ESC 모두 비활성화)
+// 규칙2: 모든 숫자는 쉼표(,) 양식으로 표기한다
+// ===========================
+
+// 규칙1: ESC 키로 모달 닫힘 방지
+document.addEventListener('keydown', function(e) {
+  const modal = document.getElementById('addModal');
+  if (e.key === 'Escape' && modal && modal.style.display !== 'none') {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+});
+
+// ===========================
 // 유틸리티
 // ===========================
+
+// 규칙2: 모든 숫자 쉼표 양식 표기
 function fmtNum(n) {
   if (n === null || n === undefined || n === '' || isNaN(n)) return '-';
-  return Number(n).toLocaleString('ko-KR');
+  const num = Number(n);
+  if (Number.isInteger(num)) {
+    return num.toLocaleString('ko-KR');
+  } else {
+    // 소수점 숫자: 정수부 쉼표 + 소수점 불필요한 0 제거
+    const parts = num.toFixed(4).replace(/\.?0+$/, '').split('.');
+    parts[0] = parseInt(parts[0]).toLocaleString('ko-KR');
+    return parts.join('.');
+  }
 }
 
+// 금액 쉼표 양식
 function fmtWon(n) {
   if (n === null || n === undefined || n === '' || isNaN(n)) return '-';
   const abs = Math.abs(Number(n));
-  if (abs >= 100000000) return (n < 0 ? '-' : '') + (abs/100000000).toFixed(1) + '억';
-  if (abs >= 10000) return (n < 0 ? '-' : '') + (abs/10000).toFixed(1) + '만';
+  const sign = Number(n) < 0 ? '-' : '';
+  if (abs >= 100000000) return sign + (abs/100000000).toLocaleString('ko-KR', {minimumFractionDigits:1, maximumFractionDigits:1}) + '억';
+  if (abs >= 10000) return sign + (abs/10000).toLocaleString('ko-KR', {minimumFractionDigits:1, maximumFractionDigits:1}) + '만';
   return '₩' + Number(n).toLocaleString('ko-KR');
 }
 
+// 수익률 (소수점 2자리)
 function fmtRate(r) {
   if (r === null || r === undefined || r === '' || isNaN(r)) return '-';
   const v = Number(r);
   const sign = v >= 0 ? '+' : '';
   return sign + v.toFixed(2) + '%';
+}
+
+// 입력필드 표시용: 숫자를 쉼표 양식 문자열로
+function fmtInputDisplay(n) {
+  if (!n && n !== 0) return '';
+  const num = Number(n);
+  if (isNaN(num)) return String(n);
+  if (Number.isInteger(num)) return num.toLocaleString('ko-KR');
+  const parts = num.toString().split('.');
+  parts[0] = parseInt(parts[0]).toLocaleString('ko-KR');
+  return parts.join('.');
 }
 
 function calcStock(s) {
@@ -972,8 +1019,11 @@ function renderMasterTable() {
         <td><span class="text-xs px-2 py-1 rounded-lg \${s.type==='시장지수ETF'?'bg-blue-50 text-blue-700':'bg-slate-100 text-slate-600'}">\${s.type}</span></td>
         <td class="font-semibold text-slate-700">\${fmtNum(s.avgPrice)}</td>
         <td>
-          <input type="number" value="\${s.curPrice}" onchange="updateCurPrice(\${idx}, this.value)"
-            class="w-24 text-sm font-semibold" min="0" placeholder="현재가 입력" />
+          <input type="text" value="\${fmtInputDisplay(s.curPrice)}"
+            onchange="updateCurPriceFromInput(\${idx}, this)"
+            onfocus="this.value=this.value.replace(/,/g,'')"
+            onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }"
+            class="w-28 text-sm font-semibold" placeholder="현재가 입력" />
         </td>
         <td class="text-slate-700">\${fmtNum(s.qty)}</td>
         <td class="text-slate-700">₩\${fmtNum(c.invest)}</td>
@@ -1010,7 +1060,15 @@ function renderMasterTable() {
 }
 
 function updateCurPrice(idx, val) {
-  appData.stocks[idx].curPrice = parseFloat(val) || 0;
+  appData.stocks[idx].curPrice = parseFloat(String(val).replace(/,/g, '')) || 0;
+  saveData(appData);
+  renderAll();
+}
+
+// 규칙2: 쉼표 포함 입력값 처리
+function updateCurPriceFromInput(idx, inputEl) {
+  const raw = String(inputEl.value).replace(/,/g, '');
+  appData.stocks[idx].curPrice = parseFloat(raw) || 0;
   saveData(appData);
   renderAll();
 }
@@ -1050,15 +1108,21 @@ function renderSignalTable() {
       <td>\${applyBadge}</td>
       <td>
         \${canApply
-          ? \`<input type="number" value="\${s.monthEndPrice||''}" onchange="updateMonthEnd(\${idx}, this.value)"
-              class="w-28 text-sm" placeholder="말일종가 입력" min="0" />\`
+          ? \`<input type="text" value="\${s.monthEndPrice ? fmtInputDisplay(s.monthEndPrice) : ''}"
+              onchange="updateMonthEndFromInput(\${idx}, this)"
+              onfocus="this.value=this.value.replace(/,/g,'')"
+              onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }"
+              class="w-28 text-sm" placeholder="말일종가 입력" />\`
           : '<span class="text-xs text-slate-400">해당없음</span>'
         }
       </td>
       <td>
         \${canApply
-          ? \`<input type="number" value="\${s.ma10||''}" onchange="updateMA10(\${idx}, this.value)"
-              class="w-28 text-sm" placeholder="10이평선 입력" min="0" />\`
+          ? \`<input type="text" value="\${s.ma10 ? fmtInputDisplay(s.ma10) : ''}"
+              onchange="updateMA10FromInput(\${idx}, this)"
+              onfocus="this.value=this.value.replace(/,/g,'')"
+              onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }"
+              class="w-28 text-sm" placeholder="10이평선 입력" />\`
           : '<span class="text-xs text-slate-400">해당없음</span>'
         }
       </td>
@@ -1069,14 +1133,32 @@ function renderSignalTable() {
 }
 
 function updateMonthEnd(idx, val) {
-  appData.stocks[idx].monthEndPrice = parseFloat(val) || 0;
+  appData.stocks[idx].monthEndPrice = parseFloat(String(val).replace(/,/g, '')) || 0;
+  saveData(appData);
+  renderSignalTable();
+  renderDashboard();
+}
+
+// 규칙2: 쉼표 입력값 처리
+function updateMonthEndFromInput(idx, inputEl) {
+  const raw = String(inputEl.value).replace(/,/g, '');
+  appData.stocks[idx].monthEndPrice = parseFloat(raw) || 0;
   saveData(appData);
   renderSignalTable();
   renderDashboard();
 }
 
 function updateMA10(idx, val) {
-  appData.stocks[idx].ma10 = parseFloat(val) || 0;
+  appData.stocks[idx].ma10 = parseFloat(String(val).replace(/,/g, '')) || 0;
+  saveData(appData);
+  renderSignalTable();
+  renderDashboard();
+}
+
+// 규칙2: 쉼표 입력값 처리
+function updateMA10FromInput(idx, inputEl) {
+  const raw = String(inputEl.value).replace(/,/g, '');
+  appData.stocks[idx].ma10 = parseFloat(raw) || 0;
   saveData(appData);
   renderSignalTable();
   renderDashboard();
@@ -1126,8 +1208,11 @@ function renderCashflowTable() {
         </select>
       </td>
       <td>
-        <input type="number" value="\${s.cfAmount||0}" onchange="updateCfAmount(\${idx}, this.value)"
-          class="w-28 text-sm" min="0" placeholder="금액 입력" />
+        <input type="text" value="\${fmtInputDisplay(s.cfAmount||0)}"
+          onchange="updateCfAmountFromInput(\${idx}, this)"
+          onfocus="this.value=this.value.replace(/,/g,'')"
+          onblur="if(this.value){ this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR'); }"
+          class="w-28 text-sm" placeholder="금액 입력" />
       </td>
       <td class="font-semibold text-slate-800">₩\${fmtNum(monthly)}</td>
       <td class="text-slate-600">₩\${fmtNum(annual)}</td>
@@ -1157,7 +1242,16 @@ function updateCfCycle(idx, val) {
 }
 
 function updateCfAmount(idx, val) {
-  appData.stocks[idx].cfAmount = parseInt(val) || 0;
+  appData.stocks[idx].cfAmount = parseInt(String(val).replace(/,/g, '')) || 0;
+  saveData(appData);
+  renderCashflowTable();
+  renderDashboard();
+}
+
+// 규칙2: 쉼표 입력값 처리
+function updateCfAmountFromInput(idx, inputEl) {
+  const raw = String(inputEl.value).replace(/,/g, '');
+  appData.stocks[idx].cfAmount = parseInt(raw) || 0;
   saveData(appData);
   renderCashflowTable();
   renderDashboard();
@@ -1194,29 +1288,32 @@ function openEditModal(idx) {
   document.getElementById('input-broker').value = s.broker;
   document.getElementById('input-name').value = s.name;
   document.getElementById('input-type').value = s.type;
-  document.getElementById('input-avgprice').value = s.avgPrice;
-  document.getElementById('input-curprice').value = s.curPrice;
-  document.getElementById('input-qty').value = s.qty;
+  // 규칙2: 수정 시 숫자를 쉼표 양식으로 표시
+  document.getElementById('input-avgprice').value = fmtInputDisplay(s.avgPrice);
+  document.getElementById('input-curprice').value = fmtInputDisplay(s.curPrice);
+  document.getElementById('input-qty').value = fmtInputDisplay(s.qty);
   document.getElementById('edit-index').value = idx;
   updateCalcPreview();
   document.getElementById('addModal').style.display = 'flex';
 }
 
+// 규칙1: 저장/취소 버튼으로만 닫기 (배경 클릭 비활성화)
 function closeModal() {
   document.getElementById('addModal').style.display = 'none';
 }
 
-function closeModalOnBg(e) {
-  if (e.target.id === 'addModal') closeModal();
-}
+// closeModalOnBg 의도적 비활성화 - 규칙1 적용
+// function closeModalOnBg(e) { /* 배경 클릭으로 닫히지 않음 */ }
 
 function updateCalcPreview() {
-  const avg = parseFloat(document.getElementById('input-avgprice').value) || 0;
-  const cur = parseFloat(document.getElementById('input-curprice').value) || 0;
-  const qty = parseFloat(document.getElementById('input-qty').value) || 0;
+  // 규칙2: 입력값에서 쉼표 제거 후 계산
+  const avg = parseFloat(String(document.getElementById('input-avgprice').value).replace(/,/g, '')) || 0;
+  const cur = parseFloat(String(document.getElementById('input-curprice').value).replace(/,/g, '')) || 0;
+  const qty = parseFloat(String(document.getElementById('input-qty').value).replace(/,/g, '')) || 0;
   const invest = avg * qty;
   const eval_ = cur * qty;
   const rate = invest > 0 ? ((eval_ - invest) / invest * 100) : 0;
+  // 미리보기 금액도 쉼표 양식으로 표기
   document.getElementById('calc-invest').textContent = invest > 0 ? '₩' + fmtNum(invest) : '-';
   document.getElementById('calc-eval').textContent = eval_ > 0 ? '₩' + fmtNum(eval_) : '-';
   const rEl = document.getElementById('calc-rate');
@@ -1232,9 +1329,10 @@ function saveStock() {
   const broker = document.getElementById('input-broker').value.trim();
   const name = document.getElementById('input-name').value.trim();
   const type = document.getElementById('input-type').value;
-  const avgPrice = parseFloat(document.getElementById('input-avgprice').value);
-  const curPrice = parseFloat(document.getElementById('input-curprice').value);
-  const qty = parseFloat(document.getElementById('input-qty').value);
+  // 규칙2: 쉼표 제거 후 숫자 파싱
+  const avgPrice = parseFloat(String(document.getElementById('input-avgprice').value).replace(/,/g, ''));
+  const curPrice = parseFloat(String(document.getElementById('input-curprice').value).replace(/,/g, ''));
+  const qty = parseFloat(String(document.getElementById('input-qty').value).replace(/,/g, ''));
   const editIdx = parseInt(document.getElementById('edit-index').value);
 
   if (!broker || !name || !type || isNaN(avgPrice) || isNaN(curPrice) || isNaN(qty)) {
