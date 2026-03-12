@@ -170,6 +170,7 @@ td select{padding:7px 10px;}
     <button onclick="doCreateSheet()" id="btnDoCreate" class="w-full btn-success px-8 py-3 rounded-xl flex items-center justify-center gap-2">
       <i class="fas fa-plus-circle"></i> 스프레드시트 생성하기
     </button>
+    <p class="text-xs text-slate-400 mt-3 text-center">※ 시트가 이미 있다면 자동으로 찾아서 연결해요</p>
   </div>
 </div>
 
@@ -274,12 +275,23 @@ td select{padding:7px 10px;}
           <div class="bg-slate-50 rounded-xl p-4"><div class="text-xs text-slate-500 mb-1">중단 검토 종목</div><div class="text-lg font-bold text-orange-500" id="dash-stop-count">-</div></div>
         </div>
       </div>
-      <div class="mt-4 bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
-        <div class="flex items-center gap-3">
-          <div class="text-2xl">📊</div>
-          <div><div class="font-bold text-green-800 text-sm">Google Sheets에서 직접 보기</div><div class="text-green-600 text-xs mt-0.5" id="sheetNameDisplay">스프레드시트 연결 대기 중...</div></div>
+      <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <div class="text-2xl">📊</div>
+            <div><div class="font-bold text-green-800 text-sm">Google Sheets에서 직접 보기</div><div class="text-green-600 text-xs mt-0.5" id="sheetNameDisplay">스프레드시트 연결 대기 중...</div></div>
+          </div>
+          <a id="sheetLink" href="#" target="_blank" class="btn-primary text-sm px-4 py-2 rounded-lg flex items-center gap-2 whitespace-nowrap" style="text-decoration:none;"><i class="fas fa-external-link-alt text-xs"></i> 시트 열기</a>
         </div>
-        <a id="sheetLink" href="#" target="_blank" class="btn-primary text-sm px-4 py-2 rounded-lg flex items-center gap-2 whitespace-nowrap" style="text-decoration:none;"><i class="fas fa-external-link-alt text-xs"></i> 시트 열기</a>
+        <div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
+          <div class="flex items-center justify-between mb-2">
+            <div class="font-bold text-blue-800 text-sm flex items-center gap-1.5"><i class="fas fa-globe text-blue-600"></i> 실시간 총자산 (원화)</div>
+            <button onclick="fetchPortfolioValue()" id="btnPortfolio" class="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1"><i class="fas fa-sync-alt"></i> 조회</button>
+          </div>
+          <div class="text-2xl font-black text-blue-700" id="dash-portfolio-krw">-</div>
+          <div class="text-xs text-blue-500 mt-1" id="dash-portfolio-info">ticker 입력 후 조회하세요</div>
+          <div class="text-xs text-slate-400 mt-0.5" id="dash-usd-krw"></div>
+        </div>
       </div>
     </section>
 
@@ -287,7 +299,10 @@ td select{padding:7px 10px;}
     <section id="section-master" class="section fade-in">
       <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div><h2 class="text-xl font-black text-slate-800 flex items-center gap-2"><i class="fas fa-seedling text-blue-500"></i> 마스터 데이터</h2><p class="text-sm text-slate-500 mt-0.5">보유 중인 주식/ETF를 모두 등록하고 관리해요</p></div>
-        <button onclick="openAddModal()" class="btn-primary flex items-center gap-2"><i class="fas fa-plus"></i> 종목 추가</button>
+        <div class="flex gap-2">
+          <button onclick="fetchAllPrices()" id="btnFetchPrices" class="btn-success flex items-center gap-2 text-sm"><i class="fas fa-sync-alt"></i> 현재가 자동 조회</button>
+          <button onclick="openAddModal()" class="btn-primary flex items-center gap-2"><i class="fas fa-plus"></i> 종목 추가</button>
+        </div>
       </div>
       <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5 flex items-start gap-3">
         <div class="text-2xl mt-0.5">🌿</div>
@@ -309,8 +324,9 @@ td select{padding:7px 10px;}
           <table>
             <thead><tr>
               <th>증권사/앱</th><th>종목명</th><th>종류</th>
+              <th class="tooltip" data-tip="Yahoo Finance 티커 (AAPL, SPY, 035720 등)">Ticker</th>
               <th class="tooltip" data-tip="내가 매수한 평균 가격">평균매수단가</th>
-              <th class="tooltip" data-tip="오늘 현재 주가 (직접 입력)">현재주가</th>
+              <th class="tooltip" data-tip="오늘 현재 주가 (직접 입력 또는 자동 조회)">현재주가</th>
               <th>보유수량</th>
               <th class="tooltip" data-tip="평단가 × 수량">총투자원금</th>
               <th class="tooltip" data-tip="현재가 × 수량">현재평가금액</th>
@@ -318,7 +334,7 @@ td select{padding:7px 10px;}
               <th class="tooltip" data-tip="-20%이하 종목">잡초판별</th>
               <th>관리</th>
             </tr></thead>
-            <tbody id="masterTableBody"><tr><td colspan="11"><div class="empty-state"><i class="fas fa-seedling block"></i><p>종목 추가 버튼을 눌러주세요!</p></div></td></tr></tbody>
+            <tbody id="masterTableBody"><tr><td colspan="12"><div class="empty-state"><i class="fas fa-seedling block"></i><p>종목 추가 버튼을 눌러주세요!</p></div></td></tr></tbody>
           </table>
         </div>
         <div class="p-4 bg-slate-50 border-t border-slate-100 rounded-b-2xl">
@@ -458,6 +474,15 @@ td select{padding:7px 10px;}
       <div class="grid grid-cols-2 gap-3">
         <div><label class="text-xs font-semibold text-slate-600 mb-1 block">증권사/앱 이름 <span class="text-red-500">*</span></label><input type="text" id="input-broker" placeholder="예: 토스, 키움증권" class="w-full"/></div>
         <div><label class="text-xs font-semibold text-slate-600 mb-1 block">주식/ETF 이름 <span class="text-red-500">*</span></label><input type="text" id="input-name" placeholder="예: SPY, 삼성전자" class="w-full"/></div>
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-slate-600 mb-1 block">Ticker <span class="text-slate-400 font-normal">(현재가 자동조회용, 선택)</span></label>
+        <div class="flex gap-2">
+          <input type="text" id="input-ticker" placeholder="예: SPY, AAPL, 035720" class="flex-1" style="text-transform:uppercase;"/>
+          <button type="button" onclick="previewTickerPrice()" class="btn-secondary text-xs px-3 flex items-center gap-1"><i class="fas fa-search"></i> 조회</button>
+        </div>
+        <div class="mt-1 text-xs text-slate-400">💡 미국주식: SPY / 한국주식: 035720 (종목코드 6자리)</div>
+        <div id="ticker-preview" class="mt-1.5 text-xs font-semibold hidden"></div>
       </div>
       <div>
         <label class="text-xs font-semibold text-slate-600 mb-1 block">종류 <span class="text-red-500">*</span></label>
@@ -833,14 +858,6 @@ function doCreateSheet() {
   });
 }
 
-function skipSheetCreate() {
-  document.getElementById('modalCreateSheet').style.display = 'none';
-  if (!ssId) {
-    toast('시트 없이 임시 사용 중이에요. 데이터는 저장되지 않아요.', 'info');
-  }
-  showMainApp();
-}
-
 // 완료 팝업 닫기 → 마스터데이터 이동 (최상위규칙3)
 function closeDoneModal() {
   document.getElementById('modalCreateDone').style.display = 'none';
@@ -881,7 +898,7 @@ function createSpreadsheet(title) {
     return data.spreadsheetId;
   }).then(function(id) {
     // 헤더 작성
-    var headerRow = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정']];
+    var headerRow = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정','Ticker']];
     return gFetch(SHEETS_BASE + '/' + id + '/values/' + encodeURIComponent(SH_MASTER + '!A1:Q1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: headerRow }).then(function() { return id; });
   });
 }
@@ -899,7 +916,7 @@ function ensureSheets() {
       // 헤더 확인
       return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1')).then(function(d) {
         if (!d.values || !d.values[0] || !d.values[0][0]) {
-          var hr = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정']];
+          var hr = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정','Ticker']];
           return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1:Q1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: hr });
         }
       });
@@ -912,7 +929,7 @@ function loadFromSheets() {
     var rows = data.values || [];
     appData.stocks = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
-        broker: r[0]||'', name: r[1]||'', type: r[2]||'',
+        broker: r[0]||'', name: r[1]||'', type: r[2]||'', ticker: r[17]||'',
         avgPrice: parseNum(r[3]), curPrice: parseNum(r[4]), qty: parseNum(r[5]),
         monthEndPrice: parseNum(r[10]), ma10: parseNum(r[11]),
         cfCycle: r[12]||'매월', cfAmount: parseIntNum(r[13]), cfDecision: r[16]||'계속',
@@ -930,7 +947,7 @@ function saveToSheets() {
     var rate = invest > 0 ? ((eval_-invest)/invest*100).toFixed(2) : 0;
     var monthly = calcMonthly(s);
     var weedTxt = ({yes:'🌿 잡초', caution:'⚠️ 주의', no:'✅ 양호', neutral:'-'})[getWeed(s)] || '-';
-    return [s.broker,s.name,s.type,s.avgPrice,s.curPrice,s.qty,invest,eval_,rate,weedTxt,s.monthEndPrice||'',s.ma10||'',s.cfCycle,s.cfAmount,monthly,monthly*12,s.cfDecision];
+    return [s.broker,s.name,s.type,s.avgPrice,s.curPrice,s.qty,invest,eval_,rate,weedTxt,s.monthEndPrice||'',s.ma10||'',s.cfCycle,s.cfAmount,monthly,monthly*12,s.cfDecision,s.ticker||''];
   });
   // 기존 데이터 클리어 후 재작성
   return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:Q') + ':clear', 'POST').then(function() {
@@ -1114,6 +1131,7 @@ function renderMasterTable() {
       '<td><span class="bg-slate-100 text-slate-600 text-xs px-2 py-1 rounded-lg">'+s.broker+'</span></td>'+
       '<td><div class="font-bold text-slate-800">'+s.name+'</div><div class="text-xs text-slate-400">'+(s.type==='시장지수ETF'?'📈 ETF':'📌 개별주')+'</div></td>'+
       '<td><span class="text-xs px-2 py-1 rounded-lg '+(s.type==='시장지수ETF'?'bg-blue-50 text-blue-700':'bg-slate-100 text-slate-600')+'">'+s.type+'</span></td>'+
+      '<td><input type="text" value="'+(s.ticker||'')+'" data-idx="'+idx+'" data-field="ticker" class="inp-ticker w-20 text-xs border border-slate-200 rounded px-2 py-1" placeholder="AAPL" style="text-transform:uppercase;"/></td>'+
       '<td class="font-semibold text-slate-700">'+fmtNum(s.avgPrice)+'</td>'+
       '<td><input type="text" value="'+fmtD(s.curPrice)+'" data-idx="'+idx+'" data-field="curPrice" class="inp-num w-28 text-sm font-semibold" placeholder="현재가 입력"/></td>'+
       '<td class="text-slate-700">'+fmtNum(s.qty)+'</td>'+
@@ -1209,6 +1227,13 @@ function renderCashflowTable() {
 // ────────────────────────────────────────────
 document.addEventListener('change', function(e) {
   var el=e.target;
+  if (el.classList.contains('inp-ticker')) {
+    var idx=parseInt(el.dataset.idx,10);
+    appData.stocks[idx].ticker = el.value.trim().toUpperCase();
+    el.value = appData.stocks[idx].ticker;
+    scheduleSave();
+    return;
+  }
   if (el.classList.contains('inp-num') && el.dataset.field) {
     var idx=parseInt(el.dataset.idx,10), field=el.dataset.field;
     appData.stocks[idx][field]=parseNum(el.value);
@@ -1251,11 +1276,12 @@ function refreshCfSums() {
 // ────────────────────────────────────────────
 function openAddModal() {
   document.getElementById('modalTitle').textContent='📌 종목 추가';
-  ['input-broker','input-name'].forEach(function(id){document.getElementById(id).value='';});
+  ['input-broker','input-name','input-ticker'].forEach(function(id){document.getElementById(id).value='';});
   document.getElementById('input-type').value='';
   ['input-avgprice','input-curprice','input-qty'].forEach(function(id){document.getElementById(id).value='';});
   document.getElementById('edit-index').value='-1';
   ['calc-invest','calc-eval','calc-rate'].forEach(function(id){document.getElementById(id).textContent='-';});
+  var tp=document.getElementById('ticker-preview');if(tp){tp.className='mt-1.5 text-xs font-semibold hidden';tp.textContent='';}
   document.getElementById('addModal').style.display='flex';
 }
 function openEditModal(idx) {
@@ -1263,11 +1289,13 @@ function openEditModal(idx) {
   document.getElementById('modalTitle').textContent='✏️ 종목 수정';
   document.getElementById('input-broker').value=s.broker;
   document.getElementById('input-name').value=s.name;
+  document.getElementById('input-ticker').value=s.ticker||'';
   document.getElementById('input-type').value=s.type;
   document.getElementById('input-avgprice').value=fmtD(s.avgPrice);
   document.getElementById('input-curprice').value=fmtD(s.curPrice);
   document.getElementById('input-qty').value=fmtD(s.qty);
   document.getElementById('edit-index').value=idx;
+  var tp=document.getElementById('ticker-preview');if(tp){tp.className='mt-1.5 text-xs font-semibold hidden';tp.textContent='';}
   updateCalcPreview();
   document.getElementById('addModal').style.display='flex';
 }
@@ -1290,12 +1318,13 @@ function saveStock() {
   var broker=document.getElementById('input-broker').value.trim();
   var name=document.getElementById('input-name').value.trim();
   var type=document.getElementById('input-type').value;
+  var ticker=(document.getElementById('input-ticker').value||'').trim().toUpperCase();
   var avg=parseNum(document.getElementById('input-avgprice').value);
   var cur=parseNum(document.getElementById('input-curprice').value);
   var qty=parseNum(document.getElementById('input-qty').value);
   var ei=parseInt(document.getElementById('edit-index').value,10);
   if(!broker||!name||!type||!avg||!cur||!qty){alert('모든 항목을 입력해주세요!\n\n• 증권사/앱 이름\n• 주식/ETF 이름\n• 종류\n• 평균매수단가\n• 현재주가\n• 보유수량');return;}
-  var stock={broker:broker,name:name,type:type,avgPrice:avg,curPrice:cur,qty:qty,monthEndPrice:cur,ma10:0,cfCycle:'매월',cfAmount:0,cfDecision:'계속'};
+  var stock={broker:broker,name:name,type:type,ticker:ticker,avgPrice:avg,curPrice:cur,qty:qty,monthEndPrice:cur,ma10:0,cfCycle:'매월',cfAmount:0,cfDecision:'계속'};
   if(ei>=0){var old=appData.stocks[ei];stock.monthEndPrice=old.monthEndPrice||cur;stock.ma10=old.ma10||0;stock.cfCycle=old.cfCycle||'매월';stock.cfAmount=old.cfAmount||0;stock.cfDecision=old.cfDecision||'계속';appData.stocks[ei]=stock;toast('종목이 수정됐어요!','success');}
   else{appData.stocks.push(stock);toast(name+' 종목이 추가됐어요!','success');}
   closeModal();scheduleSave();renderAll();
@@ -1306,6 +1335,115 @@ function deleteStock(idx) {
   if(!confirm('"'+s.name+'" 종목을 삭제할까요?\n삭제하면 되돌릴 수 없어요.'))return;
   appData.stocks.splice(idx,1);scheduleSave();renderAll();
   toast(s.name+' 종목이 삭제됐어요','info');
+}
+
+// ────────────────────────────────────────────
+// 현재가 자동 조회 (백엔드 API 활용)
+// ────────────────────────────────────────────
+function previewTickerPrice() {
+  var ticker = (document.getElementById('input-ticker').value||'').trim();
+  var preview = document.getElementById('ticker-preview');
+  if (!ticker) { toast('Ticker를 입력해주세요 (예: SPY, AAPL, 035720)', 'error'); return; }
+  preview.className = 'mt-1.5 text-xs font-semibold text-slate-500';
+  preview.textContent = '조회 중...';
+  fetch('/api/price?ticker=' + encodeURIComponent(ticker))
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (data.error) {
+        preview.className = 'mt-1.5 text-xs font-semibold text-red-500';
+        preview.textContent = '❌ ' + data.error;
+        return;
+      }
+      var curEl = document.getElementById('input-curprice');
+      if (curEl && data.priceKrw) {
+        curEl.value = data.priceKrw.toLocaleString('ko-KR');
+        updateCalcPreview();
+      }
+      var stateLabel = {'REGULAR':'장중','PRE':'프리마켓','POST':'애프터마켓','CLOSED':'장마감','PREPRE':'준비중'}[data.marketState] || data.marketState;
+      preview.className = 'mt-1.5 text-xs font-semibold text-green-600';
+      preview.textContent = '✅ ' + ticker.toUpperCase() + ': ₩' + (data.priceKrw||0).toLocaleString('ko-KR') + ' (' + stateLabel + ')' + (data.usdKrw ? ' · $1=' + Math.round(data.usdKrw) + '원' : '');
+    })
+    .catch(function() {
+      preview.className = 'mt-1.5 text-xs font-semibold text-red-500';
+      preview.textContent = '❌ 조회 실패. 네트워크를 확인해주세요.';
+    });
+}
+
+// 마스터 데이터 전체 종목 현재가 일괄 조회
+function fetchAllPrices() {
+  var stocks = appData.stocks;
+  var withTicker = stocks.filter(function(s){ return s.ticker; });
+  if (!withTicker.length) {
+    toast('Ticker가 입력된 종목이 없어요. 종목 수정에서 Ticker를 추가해주세요!', 'error');
+    return;
+  }
+  var btn = document.getElementById('btnFetchPrices');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner spin"></i> 조회 중...'; }
+
+  var tickers = withTicker.map(function(s){ return s.ticker; }).join(',');
+  fetch('/api/prices?tickers=' + encodeURIComponent(tickers))
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var updated = 0;
+      if (data.results) {
+        data.results.forEach(function(r) {
+          if (r.error || !r.priceKrw) return;
+          var found = stocks.filter(function(s){ return s.ticker && s.ticker.toUpperCase() === r.originalTicker.toUpperCase(); });
+          found.forEach(function(s){ s.curPrice = r.priceKrw; updated++; });
+        });
+      }
+      if (updated > 0) {
+        scheduleSave();
+        renderAll();
+        toast(updated + '개 종목 현재가가 업데이트됐어요! 📈', 'success');
+        // 대시보드 포트폴리오도 자동 갱신
+        fetchPortfolioValue();
+      } else {
+        toast('업데이트된 종목이 없어요. Ticker를 확인해주세요.', 'error');
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 현재가 자동 조회'; }
+    })
+    .catch(function() {
+      toast('현재가 조회 실패. 잠시 후 다시 시도해주세요.', 'error');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 현재가 자동 조회'; }
+    });
+}
+
+// 포트폴리오 총자산 조회
+function fetchPortfolioValue() {
+  var stocks = appData.stocks;
+  var withTicker = stocks.filter(function(s){ return s.ticker; });
+  if (!withTicker.length) {
+    document.getElementById('dash-portfolio-krw').textContent = '-';
+    document.getElementById('dash-portfolio-info').textContent = 'ticker 입력 후 조회하세요';
+    return;
+  }
+  var btn = document.getElementById('btnPortfolio');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner spin"></i>'; }
+  var holdings = withTicker.map(function(s){ return { name: s.name, ticker: s.ticker, avgPriceKrw: s.avgPrice, qty: s.qty }; });
+  fetch('/api/portfolio', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ holdings: holdings })
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var s = data.summary;
+      if (!s) return;
+      var el = document.getElementById('dash-portfolio-krw');
+      el.textContent = '₩' + Math.round(s.totalPortfolioKrw||0).toLocaleString('ko-KR');
+      var profitSign = s.totalProfitKrw >= 0 ? '+' : '';
+      document.getElementById('dash-portfolio-info').textContent =
+        profitSign + Math.round(s.totalProfitKrw||0).toLocaleString('ko-KR') + '원 (' + (s.totalProfitPct>=0?'+':'') + (s.totalProfitPct||0).toFixed(2) + '%) · ' + withTicker.length + '개 종목';
+      if (s.usdKrw) {
+        document.getElementById('dash-usd-krw').textContent = '$1 = ₩' + Math.round(s.usdKrw).toLocaleString('ko-KR');
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 조회'; }
+    })
+    .catch(function() {
+      document.getElementById('dash-portfolio-info').textContent = '조회 실패. 잠시 후 다시 시도해주세요.';
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 조회'; }
+    });
 }
 
 // ────────────────────────────────────────────
