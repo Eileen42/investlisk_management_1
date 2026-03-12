@@ -1215,6 +1215,54 @@ function calcMonthly(s) {
   return s.cfCycle==='매일'?a*20:s.cfCycle==='매주'?a*4:s.cfCycle==='매월'?a:0;
 }
 
+// ── 4단계 국면 분석 ──────────────────────────
+function getPhase(s) {
+  var cur = s.curPrice || 0;
+  var ma10 = s.ma10 || 0;
+  var smaPrev = s.smaPrev || 0;
+  if (!cur || !ma10) return null;
+  var above = cur > ma10;
+  if (!smaPrev) return above ? 'simple_above' : 'simple_below';
+  var up = ma10 > smaPrev;
+  if (above && up)   return 1; // 🔥 강력한 상승
+  if (!above && up)  return 2; // ⚠️ 일시적 조정
+  if (!above && !up) return 3; // ❄️ 빙하기
+  return 4;                    // 🌱 바닥 탈출
+}
+function getPhaseBadge(phase, compact) {
+  var s = compact ? 'padding:3px 10px;font-size:11px;' : 'padding:8px 18px;font-size:14px;';
+  var base = 'display:inline-block;border-radius:20px;font-weight:800;color:white;'+s;
+  switch(phase) {
+    case 1: return '<span style="'+base+'background:#dc2626;">🔥 1단계: 강력한 상승 추세</span>';
+    case 2: return '<span style="'+base+'background:#d97706;">⚠️ 2단계: 일시적 조정 / 이탈 경계</span>';
+    case 3: return '<span style="'+base+'background:#2563eb;">❄️ 3단계: 빙하기 / 강력한 하락장</span>';
+    case 4: return '<span style="'+base+'background:#16a34a;">🌱 4단계: 바닥 탈출 / 상승 전환</span>';
+    case 'simple_above': return '<span style="'+base+'background:#15803d;">🟢 10이평선 위 (안전)</span>';
+    case 'simple_below': return '<span style="'+base+'background:#dc2626;">🔴 10이평선 아래 (위험)</span>';
+    default: return '';
+  }
+}
+function getPhaseGuide(phase) {
+  switch(phase) {
+    case 1: return '주가가 선 위에 있고, 이평선도 위로 뻗어나갑니다. 복리를 누리며 계속 모아가세요.';
+    case 2: return '주가가 선 아래로 뚫렸지만, 장기 추세선은 아직 우상향 중입니다. 월말까지 하락이 유지되는지 주의 깊게 관망하세요.';
+    case 3: return '주가도 뚫렸고 이평선마저 아래로 꺾였습니다. 절대 매수 금지! 현금을 쥐고 대피하십시오.';
+    case 4: return '이평선은 하락 중이나 주가가 선 위로 뚫고 올라왔습니다. 추세가 전환될 가능성이 높은 시기입니다.';
+    default: return '';
+  }
+}
+function getPhaseAction(phase) {
+  switch(phase) {
+    case 1: return '<span class="text-sm font-bold text-red-700">🔥 계속 모으기</span>';
+    case 2: return '<span class="text-sm font-bold text-amber-600">⚠️ 관망</span>';
+    case 3: return '<span class="text-sm font-bold text-blue-700">❄️ 매수 금지 / 대피</span>';
+    case 4: return '<span class="text-sm font-bold text-green-700">🌱 전환 감시</span>';
+    case 'simple_above': return '<span class="text-sm font-bold text-green-700">✅ 계속 모으기</span>';
+    case 'simple_below': return '<span class="text-sm font-bold text-red-700">🛑 매수 중단</span>';
+    default: return '<span class="text-xs text-slate-400">-</span>';
+  }
+}
+
 // ────────────────────────────────────────────
 // 대시보드
 // ────────────────────────────────────────────
@@ -1333,25 +1381,31 @@ function renderSignalPanel(s) {
       : '<div class="text-sm font-bold text-red-700 mt-1">🛑 매수 중단</div>';
   }
 
-  // ── 실시간 현재가 vs 10이평선 뱃지 (최상단) ──
+  // ── 4단계 국면 뱃지 (최상단) ──
   var curPrice = s.curPrice || 0;
+  var smaPrevVal = s.smaPrev || 0;
+  var phase = getPhase(s);
   var liveStatusBlock = '';
   if (ma10Val > 0 && curPrice > 0) {
-    var curAbove = curPrice > ma10Val;
     var diff = Math.round(Math.abs(curPrice - ma10Val));
-    var dirText = curAbove ? '높습니다' : '낮습니다';
-    var diffDesc = '현재가(₩'+fmtNum(Math.round(curPrice))+')가 10이평선(₩'+fmtNum(Math.round(ma10Val))+')보다 ₩'+fmtNum(diff)+' '+dirText;
-    var liveBadgeHtml = curAbove
-      ? '<span style="display:inline-block;background:#dcfce7;color:#15803d;border-radius:20px;padding:7px 18px;font-weight:800;font-size:14px;">🟢 10이평선 위 (안전)</span>'
-      : '<span style="display:inline-block;background:#fef2f2;color:#dc2626;border-radius:20px;padding:7px 18px;font-weight:800;font-size:14px;">🔴 10이평선 아래 (위험)</span>';
-    var sellWarnHtml = (isEtf && !curAbove)
-      ? '<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#dc2626;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
+    var posText = curPrice > ma10Val ? '높습니다' : '낮습니다';
+    var diffDesc = '현재가(₩'+fmtNum(Math.round(curPrice))+')가 10이평선(₩'+fmtNum(Math.round(ma10Val))+')보다 ₩'+fmtNum(diff)+' '+posText;
+    var smaDir = smaPrevVal > 0
+      ? (ma10Val > smaPrevVal
+          ? '<span style="color:#dc2626;font-weight:700;">▲ 상승</span> 중입니다 (지난달: ₩'+fmtNum(Math.round(smaPrevVal))+')'
+          : '<span style="color:#2563eb;font-weight:700;">▼ 하락</span> 중입니다 (지난달: ₩'+fmtNum(Math.round(smaPrevVal))+')')
+      : '';
+    var guideText = getPhaseGuide(phase);
+    var etfSellWarn = (isEtf && (phase === 3))
+      ? '<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#1d4ed8;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
       : '';
     liveStatusBlock =
       '<div style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:14px;padding:14px 16px;margin-bottom:12px;">'
-        +'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+liveBadgeHtml+'</div>'
-        +'<div style="font-size:12px;color:#64748b;text-align:center;">'+diffDesc+'</div>'
-        +sellWarnHtml
+        +'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+getPhaseBadge(phase, false)+'</div>'
+        +(guideText ? '<div style="font-size:12px;color:#475569;text-align:center;margin-bottom:6px;line-height:1.5;">'+guideText+'</div>' : '')
+        +'<div style="font-size:11px;color:#94a3b8;text-align:center;">'+diffDesc+'</div>'
+        +(smaDir ? '<div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:2px;">이번 달 10이평선(₩'+fmtNum(Math.round(ma10Val))+')이 지난달보다 '+smaDir+'</div>' : '')
+        +etfSellWarn
       +'</div>';
   }
 
@@ -1418,6 +1472,7 @@ function fetchSignalPanelMa10(ticker) {
         var s = appData.stocks.find(function(st){ return st.ticker && st.ticker.toUpperCase() === ticker.toUpperCase(); });
         if (s) {
           s.ma10 = data.ma10;
+          if (data.smaPrev != null) s.smaPrev = data.smaPrev;
           s.monthEndPrice = data.currentMonthClose || s.monthEndPrice;
           scheduleSave();
           // 패널 재렌더
@@ -1439,6 +1494,7 @@ function loadMiniChart(s) {
       // 10이평선 데이터 업데이트
       if (data.ma10 != null && (s.ma10 !== data.ma10 || !s.monthEndPrice)) {
         s.ma10 = data.ma10;
+        if (data.smaPrev != null) s.smaPrev = data.smaPrev;
         if (data.currentMonthClose) s.monthEndPrice = data.currentMonthClose;
         scheduleSave();
         // 패널 내 숫자 갱신 (리렌더 없이)
@@ -1644,22 +1700,22 @@ function renderSignalTable() {
     var ma10Val = s.ma10 || 0;
     var hasTicker = !!s.ticker;
 
-    // ── 시장 상태: ETF만 bull/bear 표시, 개별주는 회색 대시
+    // ── 시장 상태: 4단계 국면 뱃지 (ETF), 개별주는 대시
     var sh = '<span class="text-xs text-slate-400">-</span>';
-    if (ca && ma10Val > 0 && mepVal > 0) {
-      var b = mepVal > ma10Val;
-      sh = b ? '<span class="bull-market">🟢 상승장</span>' : '<span class="bear-market">🔴 하락장</span>';
+    if (ma10Val > 0 && s.curPrice > 0) {
+      var ph = getPhase(s);
+      sh = ph ? getPhaseBadge(ph, true) : '<span class="text-xs text-slate-400">조회 중...</span>';
+    } else if (hasTicker) {
+      sh = '<span class="text-xs text-slate-400">이평선 조회 필요</span>';
     }
 
-    // ── 나의 행동 지침: ETF만 매수/중단, 개별주는 항상 고정 안내문
+    // ── 나의 행동 지침: 4단계 기반 or 개별주 안내
     var ah = ca
       ? '<span class="text-xs text-slate-400">-</span>'
       : '<span class="text-xs text-amber-600">개별주식 전략 별도 관리</span>';
-    if (ca && ma10Val > 0 && mepVal > 0) {
-      var b2 = mepVal > ma10Val;
-      ah = b2
-        ? '<span class="text-sm font-bold text-green-700">✅ 계속 모으기</span>'
-        : '<span class="text-sm font-bold text-red-700">🛑 매수 중단</span>';
+    if (ca && ma10Val > 0 && s.curPrice > 0) {
+      var ph2 = getPhase(s);
+      ah = getPhaseAction(ph2);
     }
 
     // ── 말일 종가 / 10이평선: ETF·개별주 구분 없이 모두 숫자 표시
@@ -1709,6 +1765,7 @@ function fetchAllMa10() {
           });
           if (s) {
             if (r.ma10 != null)              { s.ma10 = r.ma10; updated++; }
+            if (r.smaPrev != null)           { s.smaPrev = r.smaPrev; }
             if (r.currentMonthClose != null) { s.monthEndPrice = r.currentMonthClose; }
           }
         });

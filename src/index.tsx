@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import indexHtml from '../public/index.html?raw'
+import indexHtml from '../public/index.html'
 
 const app = new Hono()
 app.use('/api/*', cors())
@@ -470,6 +470,7 @@ interface Ma10Result {
   ticker: string
   monthlyCloses: Array<{ date: string; close: number }>
   ma10: number | null
+  smaPrev: number | null
   currentMonthClose: number | null
   marketState: string
   signal: 'bull' | 'bear' | null
@@ -529,10 +530,16 @@ async function fetchMa10Data(ticker: string): Promise<Ma10Result | null> {
 
     if (pairs.length === 0) return null
 
-    // 최근 10개월만 사용
+    // 최근 10개월 SMA (이번 달 기준)
     const last10 = pairs.slice(-10)
     const ma10 = last10.length === 10
       ? parseFloat((last10.reduce((s, p) => s + p.close, 0) / 10).toFixed(isKrTicker ? 0 : 2))
+      : null
+
+    // 지난달 기준 SMA10 (기울기 계산용)
+    const prev10 = pairs.slice(-11, -1)
+    const smaPrev = prev10.length === 10
+      ? parseFloat((prev10.reduce((s, p) => s + p.close, 0) / 10).toFixed(isKrTicker ? 0 : 2))
       : null
 
     // 이번 달 말일 종가 = 가장 마지막 월봉 종가
@@ -547,6 +554,7 @@ async function fetchMa10Data(ticker: string): Promise<Ma10Result | null> {
       ticker,
       monthlyCloses: pairs.slice(-13), // 최근 13개월 반환 (차트용)
       ma10,
+      smaPrev,
       currentMonthClose,
       marketState,
       signal
