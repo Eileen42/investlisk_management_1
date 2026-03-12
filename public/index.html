@@ -342,7 +342,7 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
         </div>
         <div class="lg:col-span-3 card p-6 flex flex-col">
           <div class="flex items-center justify-between mb-4"><h2 class="text-base font-bold text-slate-800 flex items-center gap-2"><i class="fas fa-bell text-amber-500"></i> 이번 달 신호</h2><button onclick="showSection('signal')" class="text-xs text-blue-500 hover:text-blue-700 font-medium">상세 →</button></div>
-          <div id="dash-signal-list" class="flex-1"><div class="signal-panel-empty"><i class="fas fa-mouse-pointer"></i><p class="font-medium text-sm">왼쪽 목록에서<br/>종목을 클릭하세요</p><p class="text-xs mt-1 text-slate-400">현재가, 10이평, 차트를 볼 수 있어요</p></div></div>
+          <div id="dash-signal-list" class="flex-1" style="overflow-y:auto;max-height:680px;"><div class="signal-panel-empty"><i class="fas fa-mouse-pointer"></i><p class="font-medium text-sm">왼쪽 목록에서<br/>종목을 클릭하세요</p><p class="text-xs mt-1 text-slate-400">현재가, 10이평, 차트를 볼 수 있어요</p></div></div>
         </div>
       </div>
       <div class="card p-6">
@@ -1442,32 +1442,38 @@ function renderSignalPanel(s) {
       ? '<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#1d4ed8;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
       : '';
     liveStatusBlock =
-      '<div id="phaseStatusBlock" style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:14px;padding:14px 16px;margin-bottom:12px;">'
-        +'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+getPhaseBadge(phase, false)+'</div>'
-        +(guideText ? '<div style="font-size:12px;color:#475569;text-align:center;margin-bottom:6px;line-height:1.5;">'+guideText+'</div>' : '')
-        +'<div style="font-size:11px;color:#94a3b8;text-align:center;">'+diffDesc+'</div>'
-        +(smaDir ? '<div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:2px;">이번 달 10이평선(₩'+fmtNum(Math.round(ma10Val))+')이 지난달보다 '+smaDir+'</div>' : '')
-        +etfSellWarn
+      '<div id="phaseStatusBlock" style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:14px;padding:10px 12px;margin-bottom:10px;">'
+        +'<div style="display:flex;align-items:flex-start;gap:10px;">'
+          // 왼쪽: 국면 뱃지
+          +'<div style="flex-shrink:0;">'+getPhaseBadge(phase, false)+'</div>'
+          // 오른쪽: 안내 텍스트 + 수치 설명
+          +'<div style="flex:1;min-width:0;">'
+            +(guideText ? '<div style="font-size:12px;color:#475569;line-height:1.5;font-weight:600;margin-bottom:4px;">'+guideText+'</div>' : '')
+            +'<div style="font-size:11px;color:#94a3b8;">'+diffDesc+'</div>'
+            +(smaDir ? '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">이번 달 10이평선(₩'+fmtNum(Math.round(ma10Val))+')이 지난달보다 '+smaDir+'</div>' : '')
+            +etfSellWarn
+          +'</div>'
+        +'</div>'
       +'</div>';
   }
 
   se.innerHTML =
     '<div class="signal-detail-box">'
       +liveStatusBlock
-      // 종목명 헤더
-      +'<div class="flex items-center gap-2 pb-3 mb-3 border-b border-slate-100">'
-        +'<div class="w-8 h-8 rounded-lg '+(isEtf?'bg-blue-100 text-blue-600':'bg-slate-100 text-slate-500')+' flex items-center justify-center text-sm font-bold">'+s.name.substring(0,2)+'</div>'
-        +'<div><div class="font-bold text-slate-800 text-sm">'+s.name+'</div><div class="text-xs text-slate-400">'+s.broker+' · '+(isEtf?'📈 ETF':'📌 개별주')+'</div></div>'
-      +'</div>'
-      // 현재가 / 수익률
-      +'<div class="grid grid-cols-2 gap-2 mb-3">'
+      // 평균매입가 / 현재가 / 수익률+손익 (3열)
+      +'<div class="grid grid-cols-3 gap-2 mb-3">'
+        +'<div class="bg-slate-50 rounded-xl p-2.5">'
+          +'<div class="text-xs text-slate-400 mb-0.5">평균매입가</div>'
+          +'<div class="font-bold text-slate-800 text-sm">₩'+fmtNum(s.avgPrice)+'</div>'
+        +'</div>'
         +'<div class="bg-slate-50 rounded-xl p-2.5">'
           +'<div class="text-xs text-slate-400 mb-0.5">현재가</div>'
           +'<div class="font-bold text-slate-800 text-sm">₩'+fmtNum(s.curPrice)+'</div>'
         +'</div>'
         +'<div class="bg-slate-50 rounded-xl p-2.5">'
-          +'<div class="text-xs text-slate-400 mb-0.5">수익률</div>'
+          +'<div class="text-xs text-slate-400 mb-0.5">수익률 / 손익</div>'
           +'<div class="font-bold text-sm '+(c.rate>=0?'profit':'loss')+'">'+fmtRate(c.rate)+'</div>'
+          +'<div class="text-xs '+(c.profit>=0?'profit':'loss')+'">'+(c.profit>=0?'+':'')+'₩'+fmtNum(Math.abs(c.profit))+'</div>'
         +'</div>'
       +'</div>'
       // 10이평선 정보 (ETF만)
@@ -1549,11 +1555,17 @@ function refreshPhaseBlock(s) {
     ? '<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#1d4ed8;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
     : '';
   el.innerHTML =
-    '<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+getPhaseBadge(phase, false)+'</div>'
-    +(guideText ? '<div style="font-size:12px;color:#475569;text-align:center;margin-bottom:6px;line-height:1.5;">'+guideText+'</div>' : '')
-    +'<div style="font-size:11px;color:#94a3b8;text-align:center;">'+diffDesc+'</div>'
-    +(smaDir ? '<div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:2px;">이번 달 10이평선(₩'+fmtNum(Math.round(ma10Val))+')이 지난달보다 '+smaDir+'</div>' : '')
-    +etfSellWarn;
+    '<div style="display:flex;align-items:flex-start;gap:10px;">'
+      // 왼쪽: 국면 뱃지
+      +'<div style="flex-shrink:0;">'+getPhaseBadge(phase, false)+'</div>'
+      // 오른쪽: 안내 텍스트 + 수치 설명
+      +'<div style="flex:1;min-width:0;">'
+        +(guideText ? '<div style="font-size:12px;color:#475569;line-height:1.5;font-weight:600;margin-bottom:4px;">'+guideText+'</div>' : '')
+        +'<div style="font-size:11px;color:#94a3b8;">'+diffDesc+'</div>'
+        +(smaDir ? '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">이번 달 10이평선(₩'+fmtNum(Math.round(ma10Val))+')이 지난달보다 '+smaDir+'</div>' : '')
+        +etfSellWarn
+      +'</div>'
+    +'</div>';
 }
 
 /* ── 차트 SMA 계산 ── */
@@ -1684,11 +1696,15 @@ function renderLwChart(candles) {
     timeScale: { borderColor: '#e2e8f0', timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true }
   });
 
+  // 가격 포맷: 소수점 없이 콤마 구분 (예: 50,400)
+  var priceFormatter = function(p) { return Math.round(p).toLocaleString('ko-KR'); };
+
   // 캔들스틱 (한국식: 빨간=상승, 파란=하락)
   _lwCandle = _lwChart.addCandlestickSeries({
     upColor: '#dc2626', downColor: '#2563eb',
     borderUpColor: '#dc2626', borderDownColor: '#2563eb',
-    wickUpColor: '#dc2626', wickDownColor: '#2563eb'
+    wickUpColor: '#dc2626', wickDownColor: '#2563eb',
+    priceFormat: { type: 'custom', formatter: priceFormatter, minMove: 1 }
   });
   _lwCandle.setData(candles);
 
@@ -1700,7 +1716,8 @@ function renderLwChart(candles) {
     var series = _lwChart.addLineSeries({
       color: getSmaColor(period), lineWidth: 2,
       priceLineVisible: false, lastValueVisible: true,
-      title: 'SMA' + period, crosshairMarkerVisible: false
+      title: 'SMA' + period, crosshairMarkerVisible: false,
+      priceFormat: { type: 'custom', formatter: priceFormatter, minMove: 1 }
     });
     series.setData(smaData);
     _lwSmaLines[period] = series;
