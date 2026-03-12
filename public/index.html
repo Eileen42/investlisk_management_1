@@ -476,6 +476,7 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
         <div class="table-wrap">
           <table>
             <thead><tr>
+              <th class="tooltip" data-tip="체크 해제 시 하단으로 이동" style="width:44px;">자동투자</th>
               <th>증권사/앱</th><th>종목명</th>
               <th class="tooltip" data-tip="매일/매주/매월/안함 중 선택">자동투자 주기</th>
               <th class="tooltip" data-tip="1번 투자할 때 들어가는 금액">1회 투자금액</th>
@@ -483,8 +484,18 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
               <th class="tooltip" data-tip="월별금액 × 12개월">연간 투자 예상</th>
               <th class="tooltip" data-tip="이 투자를 계속할지 결정">통제 결정</th>
             </tr></thead>
-            <tbody id="cashflowTableBody"><tr><td colspan="7"><div class="empty-state"><i class="fas fa-wallet block"></i><p>마스터 데이터에 종목을 추가하면 자동으로 나타나요</p></div></td></tr></tbody>
+            <tbody id="cashflowTableBody"><tr><td colspan="8"><div class="empty-state"><i class="fas fa-wallet block"></i><p>마스터 데이터에 종목을 추가하면 자동으로 나타나요</p></div></td></tr></tbody>
           </table>
+        </div>
+        <!-- 일시중단 종목 토글 섹션 -->
+        <div id="cfPausedSection" style="display:none;border-top:2px dashed #e2e8f0;margin:0 0 0 0;">
+          <button id="cfPausedToggleBtn" onclick="toggleCfPausedSection()"
+            style="width:100%;padding:12px 20px;background:#f8fafc;border:none;text-align:left;font-size:13px;font-weight:700;color:#64748b;cursor:pointer;display:flex;align-items:center;gap:6px;">
+            ⏸ 일시중단 종목
+          </button>
+          <div id="cfPausedInner" style="display:none;background:#f8fafc;padding:0 0 8px;overflow-x:auto;">
+            <!-- 일시중단된 종목 행이 JS로 채워짐 -->
+          </div>
         </div>
         <div class="p-4 bg-slate-50 border-t border-slate-100 rounded-b-2xl">
           <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
@@ -703,8 +714,9 @@ var SH_MASTER = "마스터데이터";
 var SH_SIGNAL = "10이평선통제탑";
 var SH_CASH   = "현금흐름통제소";
 var SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.profile';
-var LS_TOKEN = 'jujini_token_v4';
-var LS_SSID  = 'jujini_ssid_v4';
+var LS_TOKEN    = 'jujini_token_v4';
+var LS_SSID     = 'jujini_ssid_v4';
+var LS_CF_PAUSE = 'jujini_cf_pause_v4'; // 자동투자 일시중단 종목 목록
 var SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 var DRIVE_BASE  = 'https://www.googleapis.com/drive/v3';
 
@@ -1162,6 +1174,7 @@ function updateSheetLinks() {
 function showMainApp() {
   showScreen('app');
   updateSheetLinks();
+  loadCfPauseState(); // 자동투자 일시중단 목록 복원
   renderAll();
 }
 
@@ -1324,7 +1337,36 @@ var _lwSmaLines    = {};    // { period: lineSeries } SMA 라인들
 var _chartInterval = '1mo'; // 현재 선택된 기간
 var _chartSmaList  = [10];  // 표시 중인 SMA 기간 목록 (기본: 10)
 var _chartStockRef = null;  // 현재 차트 종목 객체
-var _weedFilterActive = false; // 잡초 필터 토글 상태
+var _weedFilterActive  = false; // 잡초 필터 토글 상태
+var _cfPausedSet       = {};    // 자동투자 일시중단 목록 { "broker_name": true }
+var _cfPausedOpen      = false; // 하단 일시중단 섹션 펼침/접힘 상태
+
+/* 자동투자 일시중단 상태 로드 (localStorage) */
+function loadCfPauseState() {
+  try { _cfPausedSet = JSON.parse(localStorage.getItem(LS_CF_PAUSE) || '{}'); }
+  catch(e) { _cfPausedSet = {}; }
+}
+/* 자동투자 일시중단 상태 저장 (localStorage) */
+function saveCfPauseState() {
+  localStorage.setItem(LS_CF_PAUSE, JSON.stringify(_cfPausedSet));
+}
+/* 종목 고유 키 생성 */
+function cfPauseKey(s) { return (s.broker||'') + '_' + (s.name||''); }
+/* 체크박스 클릭 — 활성↔일시중단 전환 */
+function toggleCfPause(idx) {
+  var s = appData.stocks[idx];
+  if (!s) return;
+  var key = cfPauseKey(s);
+  if (_cfPausedSet[key]) { delete _cfPausedSet[key]; }
+  else { _cfPausedSet[key] = true; }
+  saveCfPauseState();
+  renderCashflowTable();
+}
+/* 하단 일시중단 섹션 펼침/접힘 */
+function toggleCfPausedSection() {
+  _cfPausedOpen = !_cfPausedOpen;
+  renderCashflowTable();
+}
 
 function toggleWeedFilter() {
   _weedFilterActive = !_weedFilterActive;
@@ -1967,38 +2009,77 @@ function fetchAllMa10() {
 // ────────────────────────────────────────────
 // 현금흐름 테이블
 // ────────────────────────────────────────────
+/* 현금흐름 테이블 행 HTML 생성 (활성/일시중단 공통) */
+function buildCfRow(s, idx, isPaused) {
+  var m=calcMonthly(s), a=m*12;
+  var dc=s.cfDecision==='계속'?'color:#15803d':s.cfDecision==='중단검토'?'color:#dc2626':'color:#64748b';
+  var chk = isPaused
+    ? '<input type="checkbox" onclick="toggleCfPause('+idx+')" style="width:16px;height:16px;cursor:pointer;accent-color:#64748b;">'
+    : '<input type="checkbox" checked onclick="toggleCfPause('+idx+')" style="width:16px;height:16px;cursor:pointer;accent-color:#22c55e;">';
+  return '<tr'+(isPaused?' style="opacity:0.5;"':'')+'>'+
+    '<td style="text-align:center;">'+chk+'</td>'+
+    '<td><span class="bg-slate-100 text-slate-600 text-xs px-2 py-1 rounded-lg">'+s.broker+'</span></td>'+
+    '<td><div class="font-bold text-slate-800">'+s.name+'</div></td>'+
+    '<td><select data-idx="'+idx+'" data-action="cfCycle" class="inp-sel text-sm">'+
+      '<option value="매일" '+(s.cfCycle==='매일'?'selected':'')+'>📅 매일</option>'+
+      '<option value="매주" '+(s.cfCycle==='매주'?'selected':'')+'>📆 매주</option>'+
+      '<option value="매월" '+(s.cfCycle==='매월'?'selected':'')+'>🗓️ 매월</option>'+
+      '<option value="안함" '+(s.cfCycle==='안함'?'selected':'')+'>🚫 안함</option>'+
+    '</select></td>'+
+    '<td><input type="text" value="'+fmtD(s.cfAmount||0)+'" data-idx="'+idx+'" data-action="cfAmount" class="inp-num w-28 text-sm" placeholder="금액 입력"/></td>'+
+    '<td class="font-semibold text-slate-800">₩'+fmtNum(m)+'</td>'+
+    '<td class="text-slate-600">₩'+fmtNum(a)+'</td>'+
+    '<td><select data-idx="'+idx+'" data-action="cfDecision" class="inp-sel text-sm" style="'+dc+'">'+
+      '<option value="계속" '+(s.cfDecision==='계속'?'selected':'')+'>✅ 계속</option>'+
+      '<option value="중단검토" '+(s.cfDecision==='중단검토'?'selected':'')+'>🛑 중단검토</option>'+
+      '<option value="보류" '+(s.cfDecision==='보류'?'selected':'')+'>⏸️ 보류</option>'+
+    '</select></td></tr>';
+}
+
 function renderCashflowTable() {
-  var tbody=document.getElementById('cashflowTableBody');
-  if(!appData.stocks.length){
-    tbody.innerHTML='<tr><td colspan="7"><div class="empty-state"><i class="fas fa-wallet block"></i><p>마스터 데이터에 종목을 추가하면 자동으로 나타나요</p></div></td></tr>';
+  var tbody  = document.getElementById('cashflowTableBody');
+  var pauseEl = document.getElementById('cfPausedSection');
+  if (!appData.stocks.length) {
+    tbody.innerHTML='<tr><td colspan="8"><div class="empty-state"><i class="fas fa-wallet block"></i><p>마스터 데이터에 종목을 추가하면 자동으로 나타나요</p></div></td></tr>';
+    if (pauseEl) pauseEl.style.display='none';
     document.getElementById('cf-monthly-sum').textContent='₩0';
     document.getElementById('cf-annual-sum').textContent='₩0';
     document.getElementById('cf-stop-count').textContent='0개';
     return;
   }
-  var ms=0,as=0,sc=0;
-  tbody.innerHTML=appData.stocks.map(function(s,idx){
-    var m=calcMonthly(s),a=m*12;
-    ms+=m;as+=a;if(s.cfDecision==='중단검토'||s.cfCycle==='안함')sc++;
-    var dc=s.cfDecision==='계속'?'color:#15803d':s.cfDecision==='중단검토'?'color:#dc2626':'color:#64748b';
-    return '<tr>'+
-      '<td><span class="bg-slate-100 text-slate-600 text-xs px-2 py-1 rounded-lg">'+s.broker+'</span></td>'+
-      '<td><div class="font-bold text-slate-800">'+s.name+'</div></td>'+
-      '<td><select data-idx="'+idx+'" data-action="cfCycle" class="inp-sel text-sm">'+
-        '<option value="매일" '+(s.cfCycle==='매일'?'selected':'')+'>📅 매일</option>'+
-        '<option value="매주" '+(s.cfCycle==='매주'?'selected':'')+'>📆 매주</option>'+
-        '<option value="매월" '+(s.cfCycle==='매월'?'selected':'')+'>🗓️ 매월</option>'+
-        '<option value="안함" '+(s.cfCycle==='안함'?'selected':'')+'>🚫 안함</option>'+
-      '</select></td>'+
-      '<td><input type="text" value="'+fmtD(s.cfAmount||0)+'" data-idx="'+idx+'" data-action="cfAmount" class="inp-num w-28 text-sm" placeholder="금액 입력"/></td>'+
-      '<td class="font-semibold text-slate-800">₩'+fmtNum(m)+'</td>'+
-      '<td class="text-slate-600">₩'+fmtNum(a)+'</td>'+
-      '<td><select data-idx="'+idx+'" data-action="cfDecision" class="inp-sel text-sm" style="'+dc+'">'+
-        '<option value="계속" '+(s.cfDecision==='계속'?'selected':'')+'>✅ 계속</option>'+
-        '<option value="중단검토" '+(s.cfDecision==='중단검토'?'selected':'')+'>🛑 중단검토</option>'+
-        '<option value="보류" '+(s.cfDecision==='보류'?'selected':'')+'>⏸️ 보류</option>'+
-      '</select></td></tr>';
-  }).join('');
+
+  var ms=0, as=0, sc=0;
+  var activeRows=[], pausedRows=[];
+
+  appData.stocks.forEach(function(s, idx) {
+    var m=calcMonthly(s), a=m*12;
+    var paused = !!_cfPausedSet[cfPauseKey(s)];
+    if (!paused) { ms+=m; as+=a; }
+    if (s.cfDecision==='중단검토'||s.cfCycle==='안함') sc++;
+    (paused ? pausedRows : activeRows).push(buildCfRow(s, idx, paused));
+  });
+
+  // 활성 목록
+  tbody.innerHTML = activeRows.length
+    ? activeRows.join('')
+    : '<tr><td colspan="8"><div style="text-align:center;padding:20px;color:#94a3b8;font-size:13px;">✅ 모든 종목이 일시중단됐어요</div></td></tr>';
+
+  // 일시중단 섹션 (하단 토글)
+  if (pauseEl) {
+    if (pausedRows.length === 0) {
+      pauseEl.style.display = 'none';
+    } else {
+      pauseEl.style.display = 'block';
+      var btn = document.getElementById('cfPausedToggleBtn');
+      var inner = document.getElementById('cfPausedInner');
+      if (btn) btn.innerHTML = '⏸ 일시중단 종목 ' + pausedRows.length + '개 ' + (_cfPausedOpen ? '▲ 접기' : '▼ 펼치기');
+      if (inner) {
+        inner.style.display = _cfPausedOpen ? 'block' : 'none';
+        inner.innerHTML = '<table style="width:100%"><tbody>' + pausedRows.join('') + '</tbody></table>';
+      }
+    }
+  }
+
   document.getElementById('cf-monthly-sum').textContent='₩'+fmtNum(ms);
   document.getElementById('cf-annual-sum').textContent='₩'+fmtNum(as);
   document.getElementById('cf-stop-count').textContent=sc+'개';
