@@ -1064,7 +1064,7 @@ function createSpreadsheet(title) {
   }).then(function(id) {
     // 헤더 작성
     var headerRow = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정','Ticker']];
-    return gFetch(SHEETS_BASE + '/' + id + '/values/' + encodeURIComponent(SH_MASTER + '!A1:Q1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: headerRow }).then(function() { return id; });
+    return gFetch(SHEETS_BASE + '/' + id + '/values/' + encodeURIComponent(SH_MASTER + '!A1:R1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: headerRow }).then(function() { return id; });
   });
 }
 
@@ -1082,7 +1082,7 @@ function ensureSheets() {
       return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1')).then(function(d) {
         if (!d.values || !d.values[0] || !d.values[0][0]) {
           var hr = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정','Ticker']];
-          return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1:Q1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: hr });
+          return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1:R1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: hr });
         }
       });
     });
@@ -1090,7 +1090,7 @@ function ensureSheets() {
 }
 
 function loadFromSheets() {
-  return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:Q')).then(function(data) {
+  return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R')).then(function(data) {
     var rows = data.values || [];
     appData.stocks = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
@@ -1115,7 +1115,7 @@ function saveToSheets() {
     return [s.broker,s.name,s.type,s.avgPrice,s.curPrice,s.qty,invest,eval_,rate,weedTxt,s.monthEndPrice||'',s.ma10||'',s.cfCycle,s.cfAmount,monthly,monthly*12,s.cfDecision,s.ticker||''];
   });
   // 기존 데이터 클리어 후 재작성
-  return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:Q') + ':clear', 'POST').then(function() {
+  return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R') + ':clear', 'POST').then(function() {
     if (!rows.length) return;
     return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2') + '?valueInputOption=RAW', 'PUT', { values: rows });
   }).then(function() {
