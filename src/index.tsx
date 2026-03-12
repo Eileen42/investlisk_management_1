@@ -227,6 +227,79 @@ async function fetchKrxList(): Promise<KrxStock[]> {
 }
 
 // ═══════════════════════════════════════════════════
+// 한국 주식 검색 서브 함수들 (병렬 실행용)
+// ═══════════════════════════════════════════════════
+
+// [방법 1] 네이버 금융 자동완성 - 인기 종목에 빠름, 소형주는 누락될 수 있음
+async function searchNaverAc(query: string): Promise<KrxStock[]> {
+  try {
+    const url = `https://ac.finance.naver.com/ac?q=${encodeURIComponent(query)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com', 'Accept': 'application/json' }
+    })
+    if (!res.ok) return []
+    const json = await res.json() as { items?: string[][][] }
+    // items[0] = 국내주식, items[1] = 해외/기타
+    const allItems = [...(json?.items?.[0] || []), ...(json?.items?.[1] || [])]
+    return allItems
+      .filter(item => item[0] && item[1] && /^\d{6}$/.test(item[1]))
+      .map(item => ({ name: item[0], ticker: item[1], market: 'KR' }))
+  } catch (_) { return [] }
+}
+
+// [방법 2] 네이버 모바일 통합검색 - 자동완성보다 더 많은 종목 커버
+async function searchNaverMobile(query: string): Promise<KrxStock[]> {
+  try {
+    const url = `https://m.stock.naver.com/api/search/all?keyword=${encodeURIComponent(query)}&page=1&pageSize=15`
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Referer': 'https://m.stock.naver.com/',
+        'Accept': 'application/json'
+      }
+    })
+    if (!res.ok) return []
+    const json = await res.json() as {
+      result?: { stocks?: Array<{ itemCode?: string; itemName?: string; stockExchangeType?: { shortName?: string } }> }
+    }
+    return (json?.result?.stocks || [])
+      .filter(s => s.itemCode && s.itemName && /^\d{6}$/.test(s.itemCode))
+      .map(s => ({ name: s.itemName!, ticker: s.itemCode!, market: s.stockExchangeType?.shortName || 'KR' }))
+  } catch (_) { return [] }
+}
+
+// [방법 3] KRX 데이터포털 종목 검색 - 전체 상장 종목 대상, 가장 완전한 검색
+// 증권사 앱처럼 KOSPI+KOSDAQ 전종목을 이름으로 검색 가능
+async function searchKrxPortal(query: string): Promise<KrxStock[]> {
+  try {
+    const body = new URLSearchParams({
+      bld: 'dbms/comm/finder/finder_stkisu',
+      locale: 'ko_KR',
+      mktsel: 'ALL',   // ALL = KOSPI + KOSDAQ 전체
+      searchText: query,
+      pagePath: '/comm/finder/finder_stkisu.jsp'
+    })
+    const res = await fetch('https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd',
+        'Origin': 'https://data.krx.co.kr'
+      },
+      body: body.toString()
+    })
+    if (!res.ok) return []
+    const json = await res.json() as {
+      block1?: Array<{ short_code?: string; codeName?: string; marketName?: string }>
+    }
+    return (json?.block1 || [])
+      .filter(s => s.short_code && s.codeName)
+      .map(s => ({ name: s.codeName!, ticker: s.short_code!, market: s.marketName || 'KR' }))
+  } catch (_) { return [] }
+}
+
+// ═══════════════════════════════════════════════════
 // 종목 검색 함수 (한/영 통합)
 // ═══════════════════════════════════════════════════
 interface SearchResult {
@@ -253,32 +326,25 @@ async function searchStocks(query: string): Promise<SearchResult[]> {
 
   // ── 1. 한국어 쿼리 처리 ──
   if (isKorean) {
-    // 1-A. 미국 주식 한글명 딕셔너리 매칭
+    // 1-A. 미국 주식 한글명 딕셔너리 매칭 (애플, 테슬라 등)
     const koMatches = Object.entries(US_KO_MAP).filter(([k]) => k.includes(q))
     koMatches.slice(0, 5).forEach(([koName, ticker]) => {
       const usSt = US_STOCKS.find(s => s.ticker === ticker)
       addResult({ name: koName + ' (' + ticker + ')', ticker, market: 'US', desc: usSt?.desc || ticker, isKorean: false })
     })
 
-    // 1-B. 네이버 금융 자동완성 (한국 주식 실시간 검색)
-    try {
-      const naverUrl = `https://ac.finance.naver.com/ac?q=${encodeURIComponent(q)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8`
-      const naverRes = await fetch(naverUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com', 'Accept': 'application/json' }
-      })
-      if (naverRes.ok) {
-        const naverJson = await naverRes.json() as { items?: string[][][] }
-        const items = naverJson?.items?.[0] || []
-        items.slice(0, 10).forEach((item) => {
-          const name = item[0], code = item[1]
-          if (name && code && /^\d{6}$/.test(code)) {
-            addResult({ name, ticker: code, market: 'KR', isKorean: true })
-          }
-        })
-      }
-    } catch (_) { /* 네이버 실패 시 KRX 폴백 */ }
+    // 1-B. 네이버 자동완성 + 네이버 모바일 + KRX 포털을 동시에 조회
+    // → 세 곳에서 병렬로 검색해서 빠짐없이 찾음 (Promise.allSettled = 하나 실패해도 나머지 결과 유지)
+    const [acRes, mobileRes, krxRes] = await Promise.allSettled([
+      searchNaverAc(q),
+      searchNaverMobile(q),
+      searchKrxPortal(q)
+    ])
+    if (acRes.status === 'fulfilled')     acRes.value.forEach(s => addResult({ ...s, isKorean: true }))
+    if (mobileRes.status === 'fulfilled') mobileRes.value.forEach(s => addResult({ ...s, isKorean: true }))
+    if (krxRes.status === 'fulfilled')    krxRes.value.forEach(s => addResult({ ...s, isKorean: true }))
 
-    // 1-C. KRX 폴백 (네이버 결과 부족할 때)
+    // 1-C. 위 세 곳 모두 실패하거나 결과가 적으면 KRX 전체 목록에서 검색 (최후 폴백)
     if (results.filter(r => r.isKorean).length < 3) {
       const krxList = await fetchKrxList()
       const matches = krxList.filter(s => s.name.toLowerCase().includes(qLower))
