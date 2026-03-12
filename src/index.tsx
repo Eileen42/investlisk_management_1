@@ -182,7 +182,6 @@ const US_KO_MAP: Record<string, string> = {
   '블랙록': 'BLK',
   '버크셔해서웨이B': 'BRK-B', '버크셔해서웨이A': 'BRK-A', '버크셔': 'BRK-B', '워렌버핏': 'BRK-B',
   // ── 소비재 / 유통 ──
-  '아마존': 'AMZN',
   '월마트': 'WMT',
   '코스트코': 'COST',
   '홈디포': 'HD',
@@ -230,7 +229,6 @@ const US_KO_MAP: Record<string, string> = {
   '스포티파이': 'SPOT', '스포티파이테크놀로지': 'SPOT',
   '스냅': 'SNAP', '스냅A': 'SNAP',
   '핀터레스트': 'PINS', '핀터레스트A': 'PINS',
-  '트윌리오A': 'TWLO',
   // ── AI / 신기술 ──
   '팔란티어': 'PLTR', '팔란티어테크놀로지스A': 'PLTR', '팔란티어테크놀로지스': 'PLTR',
   '암홀딩스': 'ARM', '암홀딩스ADR': 'ARM', 'ARM홀딩스': 'ARM',
