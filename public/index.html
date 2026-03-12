@@ -1598,29 +1598,49 @@ function renderSignalTable() {
   if(!appData.stocks.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty-state"><i class="fas fa-chart-line block"></i><p>마스터 데이터에 종목을 추가하면 자동으로 나타나요</p></div></td></tr>';return;}
   tbody.innerHTML=appData.stocks.map(function(s,idx){
     var ca=s.type==='시장지수ETF';
-    // ⚠️ 적용 불가 → ⚠️ 적용 부적합 으로 변경
+
+    // 전략 적용 여부 뱃지: ETF=파랑, 개별주=노랑(⚠️ 적용 부적합) 고정
     var ab=ca
       ? '<span class="text-xs bg-blue-50 text-blue-700 border border-blue-200 px-2 py-1 rounded-lg">✅ 적용 가능</span>'
       : '<span class="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-1 rounded-lg">⚠️ 적용 부적합</span>';
+
     var mepVal = s.monthEndPrice || 0;
     var ma10Val = s.ma10 || 0;
-    var sh='<span class="text-xs text-slate-400">-</span>', ah='<span class="text-xs text-slate-400">-</span>';
-    if(ca&&ma10Val>0&&mepVal>0){
-      var b=mepVal>ma10Val;
-      sh=b?'<span class="bull-market">🟢 상승장</span>':'<span class="bear-market">🔴 하락장</span>';
-      ah=b?'<span class="text-sm font-bold text-green-700">✅ 계속 모으기</span>':'<span class="text-sm font-bold text-red-700">🛑 매수 중단</span>';
-    } else if(!ca){ ah='<span class="text-xs text-amber-600">개별주식 전략 별도 관리</span>'; }
-    // 말일종가/10이평 - 읽기전용 (자동조회값 표시)
-    var mi,mai;
-    if(!ca){
-      mi ='<span class="text-xs text-slate-400">해당없음</span>';
-      mai='<span class="text-xs text-slate-400">해당없음</span>';
-    } else {
-      mi  = mepVal >0 ? '<div class="ma10-auto-val '+(mepVal>ma10Val&&ma10Val>0?'bull':mepVal<ma10Val&&ma10Val>0?'bear':'')+'">₩'+fmtNum(mepVal)+'</div>'
-                      : '<div class="ma10-loading"><i class="fas fa-sync-alt text-xs"></i> 자동조회</div>';
-      mai = ma10Val>0 ? '<div class="ma10-auto-val">₩'+fmtNum(ma10Val)+'</div>'
-                      : '<div class="ma10-loading"><i class="fas fa-sync-alt text-xs"></i> 자동조회</div>';
+    var hasTicker = !!s.ticker;
+
+    // ── 시장 상태: ETF만 bull/bear 표시, 개별주는 회색 대시
+    var sh = '<span class="text-xs text-slate-400">-</span>';
+    if (ca && ma10Val > 0 && mepVal > 0) {
+      var b = mepVal > ma10Val;
+      sh = b ? '<span class="bull-market">🟢 상승장</span>' : '<span class="bear-market">🔴 하락장</span>';
     }
+
+    // ── 나의 행동 지침: ETF만 매수/중단, 개별주는 항상 고정 안내문
+    var ah = ca
+      ? '<span class="text-xs text-slate-400">-</span>'
+      : '<span class="text-xs text-amber-600">개별주식 전략 별도 관리</span>';
+    if (ca && ma10Val > 0 && mepVal > 0) {
+      var b2 = mepVal > ma10Val;
+      ah = b2
+        ? '<span class="text-sm font-bold text-green-700">✅ 계속 모으기</span>'
+        : '<span class="text-sm font-bold text-red-700">🛑 매수 중단</span>';
+    }
+
+    // ── 말일 종가 / 10이평선: ETF·개별주 구분 없이 모두 숫자 표시
+    //    Ticker가 없으면 '티커 미등록', 데이터 없으면 '자동조회' 로딩 표시
+    function makeValCell(val, colorClass) {
+      if (!hasTicker) return '<span class="text-xs text-slate-300">티커 미등록</span>';
+      if (val > 0)    return '<div class="ma10-auto-val '+(colorClass||'')+'">₩'+fmtNum(val)+'</div>';
+      return '<div class="ma10-loading"><i class="fas fa-sync-alt text-xs"></i> 자동조회</div>';
+    }
+
+    // 말일 종가 색상: ETF만 bull/bear 컬러, 개별주는 기본색
+    var mepColor = ca && ma10Val > 0
+      ? (mepVal > ma10Val ? 'bull' : mepVal < ma10Val ? 'bear' : '')
+      : '';
+    var mi  = makeValCell(mepVal,  mepColor);
+    var mai = makeValCell(ma10Val, '');
+
     return '<tr>'
       +'<td><div class="font-bold text-slate-800">'+s.name+'</div><div class="text-xs text-slate-400">'+s.broker+'</div></td>'
       +'<td><span class="text-xs px-2 py-1 rounded-lg '+(ca?'bg-blue-50 text-blue-700':'bg-slate-100 text-slate-600')+'">'+s.type+'</span></td>'
@@ -1628,17 +1648,19 @@ function renderSignalTable() {
   }).join('');
 }
 
-// 10이평선 통제탑 전체 자동 조회
+// 10이평선 통제탑 전체 자동 조회 (ETF + 개별주식 모두)
 function fetchAllMa10() {
   var stocks = appData.stocks;
-  var etfs = stocks.filter(function(s){ return s.type==='시장지수ETF' && s.ticker; });
-  if (!etfs.length) {
-    toast('Ticker가 입력된 ETF 종목이 없어요. 종목 수정에서 Ticker를 입력해주세요!', 'error');
+  // Ticker가 있는 모든 종목 대상 (ETF 한정 제거)
+  var withTicker = stocks.filter(function(s){ return !!s.ticker; });
+  if (!withTicker.length) {
+    toast('Ticker가 입력된 종목이 없어요. 종목 수정에서 Ticker를 입력해주세요!', 'error');
     return;
   }
   var btn = document.getElementById('btnFetchMa10');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner spin"></i> 조회 중...'; }
-  var tickers = etfs.map(function(s){ return s.ticker; }).join(',');
+
+  var tickers = withTicker.map(function(s){ return s.ticker; }).join(',');
   fetch('/api/ma10s?tickers=' + encodeURIComponent(tickers))
     .then(function(r){ return r.json(); })
     .then(function(data) {
@@ -1646,7 +1668,9 @@ function fetchAllMa10() {
       if (data.results) {
         data.results.forEach(function(r) {
           if (r.error) return;
-          var s = stocks.find(function(st){ return st.ticker && st.ticker.toUpperCase() === (r.originalTicker||r.ticker||'').toUpperCase(); });
+          var s = stocks.find(function(st){
+            return st.ticker && st.ticker.toUpperCase() === (r.originalTicker||r.ticker||'').toUpperCase();
+          });
           if (s) {
             if (r.ma10 != null)              { s.ma10 = r.ma10; updated++; }
             if (r.currentMonthClose != null) { s.monthEndPrice = r.currentMonthClose; }
@@ -1657,7 +1681,7 @@ function fetchAllMa10() {
         scheduleSave();
         renderSignalTable();
         renderDashboard();
-        toast(updated + '개 ETF 이평선이 자동 조회됐어요! 📊', 'success');
+        toast(updated + '개 종목 이평선이 자동 조회됐어요! 📊', 'success');
       } else {
         toast('업데이트된 이평선이 없어요. Ticker를 확인해주세요.', 'error');
       }
