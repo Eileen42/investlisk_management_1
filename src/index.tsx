@@ -215,7 +215,7 @@ const US_KO_MAP: Record<string, string> = {
   '허니웰': 'HON',
   '프록터앤드갬블': 'PG', '피앤지': 'PG',
   // ── 모빌리티 / EV ──
-  '우버': 'UBER', '우버테크놀로지스': 'UBER',
+  '우버테크놀로지스': 'UBER',
   '리프트': 'LYFT', '리프트A': 'LYFT',
   '리비안': 'RIVN', '리비안오토모티브A': 'RIVN', '리비안오토모티브': 'RIVN',
   '루시드': 'LCID', '루시드그룹': 'LCID',
@@ -223,14 +223,14 @@ const US_KO_MAP: Record<string, string> = {
   '샤오펑': 'XPEV', '샤오펑ADR': 'XPEV',
   '리오토': 'LI', '리오토ADR': 'LI', '이상오토모티브ADR': 'LI',
   // ── 이커머스 / 플랫폼 ──
-  '쿠팡': 'CPNG',
+  '우버': 'UBER', '쿠팡': 'CPNG',
   '쇼피파이': 'SHOP', '쇼피파이A': 'SHOP',
   '에어비앤비': 'ABNB', '에어비앤비A': 'ABNB',
   '도어대시': 'DASH', '도어대시A': 'DASH',
   '스포티파이': 'SPOT', '스포티파이테크놀로지': 'SPOT',
   '스냅': 'SNAP', '스냅A': 'SNAP',
   '핀터레스트': 'PINS', '핀터레스트A': 'PINS',
-  '트윌리오': 'TWLO',
+  '트윌리오A': 'TWLO',
   // ── AI / 신기술 ──
   '팔란티어': 'PLTR', '팔란티어테크놀로지스A': 'PLTR', '팔란티어테크놀로지스': 'PLTR',
   '암홀딩스': 'ARM', '암홀딩스ADR': 'ARM', 'ARM홀딩스': 'ARM',
