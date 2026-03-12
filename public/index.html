@@ -1265,13 +1265,27 @@ function getPhaseBadge(phase, compact) {
       default: return '';
     }
   } else {
-    // 상세 패널용: 대형 뱃지
-    var bs = 'display:inline-block;border-radius:20px;font-weight:800;padding:10px 24px;font-size:15px;letter-spacing:0.3px;';
+    // 상세 패널용: 2줄 가운데 정렬 뱃지
+    var bs = 'display:inline-block;border-radius:20px;font-weight:800;padding:10px 20px;text-align:center;line-height:1.4;letter-spacing:0.2px;';
+    var line1 = 'display:block;font-size:11px;opacity:0.85;font-weight:700;';
+    var line2 = 'display:block;font-size:15px;font-weight:900;';
     switch(phase) {
-      case 1: return '<span style="'+bs+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 4px 14px rgba(220,38,38,.5);">🔥 1단계: 강력한 상승 추세</span>';
-      case 2: return '<span style="'+bs+'background:linear-gradient(135deg,#f59e0b,#d97706);color:white;box-shadow:0 4px 14px rgba(245,158,11,.5);">⚠️ 2단계: 일시적 조정 / 이탈 경계</span>';
-      case 3: return '<span style="'+bs+'background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;box-shadow:0 4px 14px rgba(37,99,235,.5);">❄️ 3단계: 빙하기 / 강력한 하락장</span>';
-      case 4: return '<span style="'+bs+'background:linear-gradient(135deg,#16a34a,#15803d);color:white;box-shadow:0 4px 14px rgba(22,163,74,.5);">🌱 4단계: 바닥 탈출 / 상승 전환 시도</span>';
+      case 1: return '<span style="'+bs+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 4px 14px rgba(220,38,38,.5);">'
+        +'<span style="'+line1+'">🔥 1단계 : 강력한 상승 추세</span>'
+        +'<span style="'+line2+'">매수 유지</span>'
+        +'</span>';
+      case 2: return '<span style="'+bs+'background:linear-gradient(135deg,#f59e0b,#d97706);color:white;box-shadow:0 4px 14px rgba(245,158,11,.5);">'
+        +'<span style="'+line1+'">⚠️ 2단계 : 일시적 조정</span>'
+        +'<span style="'+line2+'">이탈 경계</span>'
+        +'</span>';
+      case 3: return '<span style="'+bs+'background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;box-shadow:0 4px 14px rgba(37,99,235,.5);">'
+        +'<span style="'+line1+'">❄️ 3단계 : 빙하기</span>'
+        +'<span style="'+line2+'">강력한 하락장</span>'
+        +'</span>';
+      case 4: return '<span style="'+bs+'background:linear-gradient(135deg,#16a34a,#15803d);color:white;box-shadow:0 4px 14px rgba(22,163,74,.5);">'
+        +'<span style="'+line1+'">🌱 4단계 : 바닥 탈출</span>'
+        +'<span style="'+line2+'">상승 전환 시도</span>'
+        +'</span>';
       case 'simple_above': return '<span style="'+bs+'background:linear-gradient(135deg,#15803d,#166534);color:white;box-shadow:0 4px 14px rgba(21,128,61,.45);">🟢 10이평선 위 (안전)</span>';
       case 'simple_below': return '<span style="'+bs+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 4px 14px rgba(220,38,38,.45);">🔴 10이평선 아래 (위험)</span>';
       default: return '';
