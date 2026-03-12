@@ -399,6 +399,14 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
             </select>
           </div>
         </div>
+        <div class="p-4 bg-slate-50 border-b border-slate-100 rounded-t-xl">
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div><div class="text-xs text-slate-500">총 투자 원금 합계</div><div class="text-base font-bold text-slate-800" id="master-sum-invest">₩0</div></div>
+            <div><div class="text-xs text-slate-500">현재 평가금액 합계</div><div class="text-base font-bold text-slate-800" id="master-sum-eval">₩0</div></div>
+            <div><div class="text-xs text-slate-500">전체 수익/손실</div><div class="text-base font-bold" id="master-sum-profit">₩0</div></div>
+            <div><div class="text-xs text-slate-500">전체 수익률</div><div class="text-base font-bold" id="master-sum-rate">0%</div></div>
+          </div>
+        </div>
         <div class="table-wrap">
           <table>
             <thead><tr>
@@ -418,14 +426,6 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
             </tr></thead>
             <tbody id="masterTableBody"><tr><td colspan="12"><div class="empty-state"><i class="fas fa-seedling block"></i><p>종목 추가 버튼을 눌러주세요!</p></div></td></tr></tbody>
           </table>
-        </div>
-        <div class="p-4 bg-slate-50 border-t border-slate-100 rounded-b-2xl">
-          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div><div class="text-xs text-slate-500">총 투자 원금 합계</div><div class="text-base font-bold text-slate-800" id="master-sum-invest">₩0</div></div>
-            <div><div class="text-xs text-slate-500">현재 평가금액 합계</div><div class="text-base font-bold text-slate-800" id="master-sum-eval">₩0</div></div>
-            <div><div class="text-xs text-slate-500">전체 수익/손실</div><div class="text-base font-bold" id="master-sum-profit">₩0</div></div>
-            <div><div class="text-xs text-slate-500">전체 수익률</div><div class="text-base font-bold" id="master-sum-rate">0%</div></div>
-          </div>
         </div>
       </div>
     </section>
