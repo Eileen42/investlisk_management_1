@@ -1230,16 +1230,47 @@ function getPhase(s) {
   return 4;                    // 🌱 바닥 탈출
 }
 function getPhaseBadge(phase, compact) {
-  var s = compact ? 'padding:3px 10px;font-size:11px;' : 'padding:8px 18px;font-size:14px;';
-  var base = 'display:inline-block;border-radius:20px;font-weight:800;color:white;'+s;
-  switch(phase) {
-    case 1: return '<span style="'+base+'background:#dc2626;">🔥 1단계: 강력한 상승 추세</span>';
-    case 2: return '<span style="'+base+'background:#d97706;">⚠️ 2단계: 일시적 조정 / 이탈 경계</span>';
-    case 3: return '<span style="'+base+'background:#2563eb;">❄️ 3단계: 빙하기 / 강력한 하락장</span>';
-    case 4: return '<span style="'+base+'background:#16a34a;">🌱 4단계: 바닥 탈출 / 상승 전환</span>';
-    case 'simple_above': return '<span style="'+base+'background:#15803d;">🟢 10이평선 위 (안전)</span>';
-    case 'simple_below': return '<span style="'+base+'background:#dc2626;">🔴 10이평선 아래 (위험)</span>';
-    default: return '';
+  if (compact) {
+    // 테이블용: 상단 조건 가이드 + 색상 뱃지
+    var guideStyle = 'display:block;font-size:9px;font-weight:700;margin-bottom:3px;letter-spacing:0.3px;';
+    var badgeStyle = 'display:inline-block;border-radius:10px;font-weight:800;padding:4px 10px;font-size:11px;letter-spacing:0.2px;';
+    switch(phase) {
+      case 1: return '<div style="text-align:center;">'
+        +'<span style="'+guideStyle+'color:#991b1b;">가격↑ &amp; 이평선↑</span>'
+        +'<span style="'+badgeStyle+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 2px 6px rgba(220,38,38,.45);">🔥 강력한 상승추세</span>'
+        +'</div>';
+      case 2: return '<div style="text-align:center;">'
+        +'<span style="'+guideStyle+'color:#92400e;">가격↓ &amp; 이평선↑</span>'
+        +'<span style="'+badgeStyle+'background:linear-gradient(135deg,#f59e0b,#d97706);color:white;box-shadow:0 2px 6px rgba(245,158,11,.45);">⚠️ 일시적 조정</span>'
+        +'</div>';
+      case 3: return '<div style="text-align:center;">'
+        +'<span style="'+guideStyle+'color:#1e3a8a;">가격↓ &amp; 이평선↓</span>'
+        +'<span style="'+badgeStyle+'background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;box-shadow:0 2px 6px rgba(37,99,235,.45);">❄️ 빙하기</span>'
+        +'</div>';
+      case 4: return '<div style="text-align:center;">'
+        +'<span style="'+guideStyle+'color:#14532d;">가격↑ &amp; 이평선↓</span>'
+        +'<span style="'+badgeStyle+'background:linear-gradient(135deg,#16a34a,#15803d);color:white;box-shadow:0 2px 6px rgba(22,163,74,.45);">🌱 바닥탈출</span>'
+        +'</div>';
+      case 'simple_above': return '<div style="text-align:center;">'
+        +'<span style="'+badgeStyle+'background:linear-gradient(135deg,#15803d,#166534);color:white;box-shadow:0 2px 6px rgba(21,128,61,.4);">🟢 10이평 위</span>'
+        +'</div>';
+      case 'simple_below': return '<div style="text-align:center;">'
+        +'<span style="'+badgeStyle+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 2px 6px rgba(220,38,38,.4);">🔴 10이평 아래</span>'
+        +'</div>';
+      default: return '';
+    }
+  } else {
+    // 상세 패널용: 대형 뱃지
+    var bs = 'display:inline-block;border-radius:20px;font-weight:800;padding:10px 24px;font-size:15px;letter-spacing:0.3px;';
+    switch(phase) {
+      case 1: return '<span style="'+bs+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 4px 14px rgba(220,38,38,.5);">🔥 1단계: 강력한 상승 추세</span>';
+      case 2: return '<span style="'+bs+'background:linear-gradient(135deg,#f59e0b,#d97706);color:white;box-shadow:0 4px 14px rgba(245,158,11,.5);">⚠️ 2단계: 일시적 조정 / 이탈 경계</span>';
+      case 3: return '<span style="'+bs+'background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;box-shadow:0 4px 14px rgba(37,99,235,.5);">❄️ 3단계: 빙하기 / 강력한 하락장</span>';
+      case 4: return '<span style="'+bs+'background:linear-gradient(135deg,#16a34a,#15803d);color:white;box-shadow:0 4px 14px rgba(22,163,74,.5);">🌱 4단계: 바닥 탈출 / 상승 전환 시도</span>';
+      case 'simple_above': return '<span style="'+bs+'background:linear-gradient(135deg,#15803d,#166534);color:white;box-shadow:0 4px 14px rgba(21,128,61,.45);">🟢 10이평선 위 (안전)</span>';
+      case 'simple_below': return '<span style="'+bs+'background:linear-gradient(135deg,#dc2626,#b91c1c);color:white;box-shadow:0 4px 14px rgba(220,38,38,.45);">🔴 10이평선 아래 (위험)</span>';
+      default: return '';
+    }
   }
 }
 function getPhaseGuide(phase) {
@@ -1252,14 +1283,15 @@ function getPhaseGuide(phase) {
   }
 }
 function getPhaseAction(phase) {
+  var base = 'display:inline-block;border-radius:8px;font-weight:800;font-size:12px;padding:4px 10px;';
   switch(phase) {
-    case 1: return '<span class="text-sm font-bold text-red-700">🔥 계속 모으기</span>';
-    case 2: return '<span class="text-sm font-bold text-amber-600">⚠️ 관망</span>';
-    case 3: return '<span class="text-sm font-bold text-blue-700">❄️ 매수 금지 / 대피</span>';
-    case 4: return '<span class="text-sm font-bold text-green-700">🌱 전환 감시</span>';
-    case 'simple_above': return '<span class="text-sm font-bold text-green-700">✅ 계속 모으기</span>';
-    case 'simple_below': return '<span class="text-sm font-bold text-red-700">🛑 매수 중단</span>';
-    default: return '<span class="text-xs text-slate-400">-</span>';
+    case 1: return '<span style="'+base+'background:#fef2f2;color:#b91c1c;border:1.5px solid #fca5a5;">📈 매수 검토</span>';
+    case 2: return '<span style="'+base+'background:#fffbeb;color:#92400e;border:1.5px solid #fcd34d;">⏸ 조정 대기</span>';
+    case 3: return '<span style="'+base+'background:#eff6ff;color:#1e3a8a;border:1.5px solid #93c5fd;">🚫 매수 금지(빙하기)</span>';
+    case 4: return '<span style="'+base+'background:#f0fdf4;color:#14532d;border:1.5px solid #86efac;">🔍 매매 검토</span>';
+    case 'simple_above': return '<span style="'+base+'background:#f0fdf4;color:#14532d;border:1.5px solid #86efac;">📈 매수 검토</span>';
+    case 'simple_below': return '<span style="'+base+'background:#fffbeb;color:#92400e;border:1.5px solid #fcd34d;">⏸ 조정 대기</span>';
+    default: return '<span style="font-size:12px;color:#94a3b8;">-</span>';
   }
 }
 
@@ -1738,13 +1770,13 @@ function renderSignalTable() {
       sh = '<span class="text-xs text-slate-400">이평선 조회 필요</span>';
     }
 
-    // ── 나의 행동 지침: 4단계 기반 or 개별주 안내
-    var ah = ca
-      ? '<span class="text-xs text-slate-400">-</span>'
-      : '<span class="text-xs text-amber-600">개별주식 전략 별도 관리</span>';
-    if (ca && ma10Val > 0 && s.curPrice > 0) {
+    // ── 나의 행동 지침: 모든 종목(개별주 포함) 4단계 기반 표시
+    var ah = '<span style="font-size:12px;color:#94a3b8;">-</span>';
+    if (ma10Val > 0 && s.curPrice > 0) {
       var ph2 = getPhase(s);
       ah = getPhaseAction(ph2);
+    } else if (hasTicker) {
+      ah = '<span style="font-size:11px;color:#94a3b8;">이평선 조회 필요</span>';
     }
 
     // ── 말일 종가 / 10이평선: ETF·개별주 구분 없이 모두 숫자 표시
