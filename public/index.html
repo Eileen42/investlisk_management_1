@@ -473,13 +473,20 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
       </div>
       <div class="card">
         <div class="p-5 border-b border-slate-100"><h3 class="font-bold text-slate-700 text-sm">💳 자동투자 계획 목록</h3></div>
+        <div class="p-4 bg-slate-50 border-b border-slate-100">
+          <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+            <div><div class="text-xs text-slate-500">월 총 이체금액 합계</div><div class="text-lg font-bold text-green-700" id="cf-monthly-sum">₩0</div></div>
+            <div><div class="text-xs text-slate-500">연간 투자 예상 합계</div><div class="text-lg font-bold text-slate-800" id="cf-annual-sum">₩0</div></div>
+            <div><div class="text-xs text-slate-500">중단 검토 종목</div><div class="text-lg font-bold text-orange-500" id="cf-stop-count">0개</div></div>
+          </div>
+        </div>
         <div class="table-wrap">
           <table>
             <thead><tr>
               <th class="tooltip" data-tip="체크 해제 시 하단으로 이동" style="width:44px;">자동투자</th>
               <th>증권사/앱</th><th>종목명</th>
-              <th class="tooltip" data-tip="매일/매주/매월/안함 중 선택">자동투자 주기</th>
-              <th class="tooltip" data-tip="1번 투자할 때 들어가는 금액">1회 투자금액</th>
+              <th class="tooltip" data-tip="매일/매주/매월 중 선택">자동투자 주기</th>
+              <th class="tooltip" data-tip="₩ 금액 또는 주 수량 선택 후 입력">1회 투자입력</th>
               <th class="tooltip" data-tip="주기에 따라 자동계산">월별 총 이체금액</th>
               <th class="tooltip" data-tip="월별금액 × 12개월">연간 투자 예상</th>
               <th class="tooltip" data-tip="이 투자를 계속할지 결정">통제 결정</th>
@@ -495,13 +502,6 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
           </button>
           <div id="cfPausedInner" style="display:none;background:#f8fafc;padding:0 0 8px;overflow-x:auto;">
             <!-- 일시중단된 종목 행이 JS로 채워짐 -->
-          </div>
-        </div>
-        <div class="p-4 bg-slate-50 border-t border-slate-100 rounded-b-2xl">
-          <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            <div><div class="text-xs text-slate-500">월 총 이체금액 합계</div><div class="text-lg font-bold text-green-700" id="cf-monthly-sum">₩0</div></div>
-            <div><div class="text-xs text-slate-500">연간 투자 예상 합계</div><div class="text-lg font-bold text-slate-800" id="cf-annual-sum">₩0</div></div>
-            <div><div class="text-xs text-slate-500">중단 검토 종목</div><div class="text-lg font-bold text-orange-500" id="cf-stop-count">0개</div></div>
           </div>
         </div>
       </div>
@@ -716,7 +716,8 @@ var SH_CASH   = "현금흐름통제소";
 var SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.profile';
 var LS_TOKEN    = 'jujini_token_v4';
 var LS_SSID     = 'jujini_ssid_v4';
-var LS_CF_PAUSE = 'jujini_cf_pause_v4'; // 자동투자 일시중단 종목 목록
+var LS_CF_PAUSE    = 'jujini_cf_pause_v4';    // 자동투자 일시중단 종목 목록
+var LS_CF_AMT_TYPE = 'jujini_cf_amt_type_v4'; // 1회 입력 단위 (amount=금액 / qty=수량)
 var SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 var DRIVE_BASE  = 'https://www.googleapis.com/drive/v3';
 
@@ -1174,7 +1175,8 @@ function updateSheetLinks() {
 function showMainApp() {
   showScreen('app');
   updateSheetLinks();
-  loadCfPauseState(); // 자동투자 일시중단 목록 복원
+  loadCfPauseState();    // 자동투자 일시중단 목록 복원
+  loadCfAmtTypeState();  // 1회 입력 단위(금액/수량) 복원
   renderAll();
 }
 
@@ -1229,7 +1231,9 @@ function getSignal(s) {
   return s.monthEndPrice>s.ma10?'bull':'bear';
 }
 function calcMonthly(s) {
-  var a=s.cfAmount||0;
+  var raw = s.cfAmount || 0;
+  // 수량(주) 모드면 현재가를 곱해서 금액으로 환산
+  var a = getCfAmtType(s) === 'qty' ? raw * (s.curPrice || 0) : raw;
   return s.cfCycle==='매일'?a*20:s.cfCycle==='매주'?a*4:s.cfCycle==='매월'?a:0;
 }
 
@@ -1366,6 +1370,21 @@ function toggleCfPause(idx) {
 function toggleCfPausedSection() {
   _cfPausedOpen = !_cfPausedOpen;
   renderCashflowTable();
+}
+
+/* ── 1회 입력 단위 (금액 ↔ 수량) ── */
+var _cfAmtTypeSet = {}; // { "broker_name": "qty" } — 기본값은 "amount"
+
+function loadCfAmtTypeState() {
+  try { _cfAmtTypeSet = JSON.parse(localStorage.getItem(LS_CF_AMT_TYPE) || '{}'); }
+  catch(e) { _cfAmtTypeSet = {}; }
+}
+function saveCfAmtTypeState() {
+  localStorage.setItem(LS_CF_AMT_TYPE, JSON.stringify(_cfAmtTypeSet));
+}
+/* 종목별 입력 단위 타입 반환 ('amount' | 'qty') */
+function getCfAmtType(s) {
+  return _cfAmtTypeSet[cfPauseKey(s)] === 'qty' ? 'qty' : 'amount';
 }
 
 function toggleWeedFilter() {
@@ -2016,6 +2035,21 @@ function buildCfRow(s, idx, isPaused) {
   var chk = isPaused
     ? '<input type="checkbox" onclick="toggleCfPause('+idx+')" style="width:16px;height:16px;cursor:pointer;accent-color:#64748b;">'
     : '<input type="checkbox" checked onclick="toggleCfPause('+idx+')" style="width:16px;height:16px;cursor:pointer;accent-color:#22c55e;">';
+
+  // 금액(₩) / 수량(주) 입력 단위 선택
+  var amtType = getCfAmtType(s); // 'amount' | 'qty'
+  var placeholder = amtType === 'qty' ? '주수 입력' : '금액 입력';
+  var amtTypeSelect =
+    '<select data-idx="'+idx+'" data-action="cfAmtType" class="inp-sel text-sm" style="width:52px;padding:3px 2px;margin-right:3px;">'+
+      '<option value="amount" '+(amtType==='amount'?'selected':'')+'>₩</option>'+
+      '<option value="qty" '+(amtType==='qty'?'selected':'')+'>주</option>'+
+    '</select>';
+
+  // 수량 모드일 때 월별금액 표시에 "N주 × ₩price" 형태로 부연
+  var monthlyDisplay = amtType === 'qty' && s.curPrice
+    ? '₩'+fmtNum(m)+'<div style="font-size:10px;color:#94a3b8;">'+(s.cfAmount||0)+'주 × ₩'+fmtNum(s.curPrice)+'</div>'
+    : '₩'+fmtNum(m);
+
   return '<tr'+(isPaused?' style="opacity:0.5;"':'')+'>'+
     '<td style="text-align:center;">'+chk+'</td>'+
     '<td><span class="bg-slate-100 text-slate-600 text-xs px-2 py-1 rounded-lg">'+s.broker+'</span></td>'+
@@ -2024,10 +2058,11 @@ function buildCfRow(s, idx, isPaused) {
       '<option value="매일" '+(s.cfCycle==='매일'?'selected':'')+'>📅 매일</option>'+
       '<option value="매주" '+(s.cfCycle==='매주'?'selected':'')+'>📆 매주</option>'+
       '<option value="매월" '+(s.cfCycle==='매월'?'selected':'')+'>🗓️ 매월</option>'+
-      '<option value="안함" '+(s.cfCycle==='안함'?'selected':'')+'>🚫 안함</option>'+
     '</select></td>'+
-    '<td><input type="text" value="'+fmtD(s.cfAmount||0)+'" data-idx="'+idx+'" data-action="cfAmount" class="inp-num w-28 text-sm" placeholder="금액 입력"/></td>'+
-    '<td class="font-semibold text-slate-800">₩'+fmtNum(m)+'</td>'+
+    '<td style="white-space:nowrap;">'+amtTypeSelect+
+      '<input type="text" value="'+fmtD(s.cfAmount||0)+'" data-idx="'+idx+'" data-action="cfAmount" class="inp-num w-24 text-sm" placeholder="'+placeholder+'"/>'+
+    '</td>'+
+    '<td class="font-semibold text-slate-800">'+monthlyDisplay+'</td>'+
     '<td class="text-slate-600">₩'+fmtNum(a)+'</td>'+
     '<td><select data-idx="'+idx+'" data-action="cfDecision" class="inp-sel text-sm" style="'+dc+'">'+
       '<option value="계속" '+(s.cfDecision==='계속'?'selected':'')+'>✅ 계속</option>'+
@@ -2113,10 +2148,17 @@ document.addEventListener('change', function(e) {
     var idx2=parseInt(el.dataset.idx,10), act=el.dataset.action;
     if(act==='cfCycle'){appData.stocks[idx2].cfCycle=el.value;}
     else if(act==='cfDecision'){appData.stocks[idx2].cfDecision=el.value;el.style.color=el.value==='계속'?'#15803d':el.value==='중단검토'?'#dc2626':'#64748b';}
+    else if(act==='cfAmtType'){
+      // 금액(₩) ↔ 수량(주) 단위 전환 — localStorage에만 저장 (Sheets 구조 변경 없음)
+      var k=cfPauseKey(appData.stocks[idx2]);
+      if(el.value==='qty'){_cfAmtTypeSet[k]='qty';}else{delete _cfAmtTypeSet[k];}
+      saveCfAmtTypeState();
+      renderCashflowTable(); return;
+    }
     scheduleSave(); refreshCfSums();
-    // 셀렉트 선택 후 행 계산값만 갱신
+    // 셀렉트 선택 후 행 계산값만 갱신 (td[5]=월별, td[6]=연간)
     var row=el.closest('tr');
-    if(row){var tds=row.querySelectorAll('td');var m=calcMonthly(appData.stocks[idx2]);if(tds[4])tds[4].textContent='₩'+fmtNum(m);if(tds[5])tds[5].textContent='₩'+fmtNum(m*12);}
+    if(row){var tds=row.querySelectorAll('td');var m=calcMonthly(appData.stocks[idx2]);if(tds[5])tds[5].textContent='₩'+fmtNum(m);if(tds[6])tds[6].textContent='₩'+fmtNum(m*12);}
     return;
   }
 });
