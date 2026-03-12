@@ -1400,7 +1400,7 @@ function renderSignalPanel(s) {
       ? '<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#1d4ed8;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
       : '';
     liveStatusBlock =
-      '<div style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:14px;padding:14px 16px;margin-bottom:12px;">'
+      '<div id="phaseStatusBlock" style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:14px;padding:14px 16px;margin-bottom:12px;">'
         +'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+getPhaseBadge(phase, false)+'</div>'
         +(guideText ? '<div style="font-size:12px;color:#475569;text-align:center;margin-bottom:6px;line-height:1.5;">'+guideText+'</div>' : '')
         +'<div style="font-size:11px;color:#94a3b8;text-align:center;">'+diffDesc+'</div>'
@@ -1484,6 +1484,36 @@ function fetchSignalPanelMa10(ticker) {
     .catch(function(){});
 }
 
+/* 패널 상단 4단계 국면 블록만 갱신 (무한루프 방지용) */
+function refreshPhaseBlock(s) {
+  var el = document.getElementById('phaseStatusBlock');
+  if (!el) return;
+  var ma10Val = s.ma10 || 0;
+  var curPrice = s.curPrice || 0;
+  var smaPrevVal = s.smaPrev || 0;
+  if (!ma10Val || !curPrice) return;
+  var isEtf = s.type === '시장지수ETF';
+  var phase = getPhase(s);
+  var diff = Math.round(Math.abs(curPrice - ma10Val));
+  var posText = curPrice > ma10Val ? '높습니다' : '낮습니다';
+  var diffDesc = '현재가(₩'+fmtNum(Math.round(curPrice))+')가 10이평선(₩'+fmtNum(Math.round(ma10Val))+')보다 ₩'+fmtNum(diff)+' '+posText;
+  var smaDir = smaPrevVal > 0
+    ? (ma10Val > smaPrevVal
+        ? '<span style="color:#dc2626;font-weight:700;">▲ 상승</span> 중입니다 (지난달: ₩'+fmtNum(Math.round(smaPrevVal))+')'
+        : '<span style="color:#2563eb;font-weight:700;">▼ 하락</span> 중입니다 (지난달: ₩'+fmtNum(Math.round(smaPrevVal))+')')
+    : '';
+  var guideText = getPhaseGuide(phase);
+  var etfSellWarn = (isEtf && phase === 3)
+    ? '<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;font-weight:700;color:#1d4ed8;">🚨 월말 종가 기준 이 상태가 유지되면 전량 매도하십시오</div>'
+    : '';
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;margin-bottom:8px;">'+getPhaseBadge(phase, false)+'</div>'
+    +(guideText ? '<div style="font-size:12px;color:#475569;text-align:center;margin-bottom:6px;line-height:1.5;">'+guideText+'</div>' : '')
+    +'<div style="font-size:11px;color:#94a3b8;text-align:center;">'+diffDesc+'</div>'
+    +(smaDir ? '<div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:2px;">이번 달 10이평선(₩'+fmtNum(Math.round(ma10Val))+')이 지난달보다 '+smaDir+'</div>' : '')
+    +etfSellWarn;
+}
+
 /* 미니 차트 로드 */
 function loadMiniChart(s) {
   fetch('/api/ma10?ticker=' + encodeURIComponent(s.ticker))
@@ -1522,23 +1552,21 @@ function loadMiniChart(s) {
       if (_signalChartInst) { try { _signalChartInst.destroy(); } catch(e){} _signalChartInst = null; }
 
       _signalChartInst = new Chart(ctx, {
-        type: 'bar',
+        type: 'line',
         data: {
           labels: labels,
           datasets: [
             {
-              type: 'bar',
+              type: 'line',
               label: '월봉 종가',
               data: prices,
-              backgroundColor: prices.map(function(p, i) {
-                if (i === 0) return 'rgba(100,116,139,0.5)';
-                return p >= prices[i-1] ? 'rgba(220,38,38,0.6)' : 'rgba(37,99,235,0.6)';
-              }),
-              borderColor: prices.map(function(p, i) {
-                if (i === 0) return 'rgba(100,116,139,1)';
-                return p >= prices[i-1] ? 'rgba(220,38,38,1)' : 'rgba(37,99,235,1)';
-              }),
-              borderWidth: 1,
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59,130,246,0.08)',
+              borderWidth: 2,
+              pointRadius: 2,
+              pointBackgroundColor: '#3b82f6',
+              tension: 0.3,
+              fill: true,
               order: 2
             },
             {
@@ -1546,6 +1574,7 @@ function loadMiniChart(s) {
               label: '10이평선',
               data: ma10Line,
               borderColor: '#f59e0b',
+              backgroundColor: 'transparent',
               borderWidth: 2,
               pointRadius: 0,
               tension: 0.3,
@@ -1575,9 +1604,9 @@ function loadMiniChart(s) {
         }
       });
 
-      // 패널 내 ma10/말일종가 표시 갱신 (선택된 종목)
+      // 패널 내 phase 블록만 갱신 (무한루프 방지)
       if (_selectedStockIdx >= 0 && appData.stocks[_selectedStockIdx] === s) {
-        renderSignalPanel(s);
+        refreshPhaseBlock(s);
       }
     })
     .catch(function(){});

@@ -126,6 +126,35 @@ const KRX_FALLBACK: KrxStock[] = [
   { name:'한국조선해양', ticker:'009540', market:'KOSPI' },
 ]
 
+// ── 한글 → 미국 주식 티커 맵 (하드코딩 딕셔너리) ──
+const US_KO_MAP: Record<string, string> = {
+  '애플': 'AAPL', '테슬라': 'TSLA', '엔비디아': 'NVDA', '마이크로소프트': 'MSFT',
+  '마소': 'MSFT', '아마존': 'AMZN', '구글': 'GOOGL', '알파벳': 'GOOGL',
+  '메타': 'META', '페이스북': 'META', '넷플릭스': 'NFLX', '인텔': 'INTC',
+  '에이엠디': 'AMD', '팔란티어': 'PLTR', '코인베이스': 'COIN',
+  '스타벅스': 'SBUX', '디즈니': 'DIS', '나이키': 'NKE', '보잉': 'BA',
+  '쿠팡': 'CPNG', 'S&P500': 'SPY', 'sp500': 'SPY', '에스앤피500': 'SPY',
+  '에스앤피': 'SPY', '나스닥': 'QQQ', '나스닥100': 'QQQ',
+  '반도체3배': 'SOXL', '반도체레버리지': 'SOXL', '금': 'GLD', '국채': 'TLT',
+  '배당': 'SCHD', '슈드': 'SCHD', '나스닥3배': 'TQQQ', '레버리지': 'TQQQ',
+  '아크': 'ARKK', '아크이노베이션': 'ARKK', '버크셔': 'BRK-B', '워렌버핏': 'BRK-B',
+  '제이피모건': 'JPM', '비자': 'V', '마스터카드': 'MA', '화이자': 'PFE',
+  '모더나': 'MRNA', '코카콜라': 'KO', '맥도날드': 'MCD', '오라클': 'ORCL',
+  '어도비': 'ADBE', '퀄컴': 'QCOM', '마이크론': 'MU', '브로드컴': 'AVGO',
+  '우버': 'UBER', '에어비앤비': 'ABNB', '스포티파이': 'SPOT', '줌': 'ZM',
+  '쇼피파이': 'SHOP', '페이팔': 'PYPL', '리비안': 'RIVN', '니오': 'NIO',
+  '알리바바': 'BABA', '바이두': 'BIDU', '징둥': 'JD', '클라우드플레어': 'NET',
+  '스노우플레이크': 'SNOW', '크라우드스트라이크': 'CRWD', '팰로알토': 'PANW',
+  '서비스나우': 'NOW', '일라이릴리': 'LLY', '존슨앤존슨': 'JNJ',
+  '엑손모빌': 'XOM', '월마트': 'WMT', '유나이티드헬스': 'UNH',
+  '세일즈포스': 'CRM', '암홀딩스': 'ARM', '도어대시': 'DASH',
+  '로빈후드': 'HOOD', '스냅': 'SNAP', '뱅크오브아메리카': 'BAC',
+  '골드만삭스': 'GS', '모건스탠리': 'MS', '블랙록': 'BLK',
+  '데이터독': 'DDOG', '몽고디비': 'MDB', '트윌리오': 'TWLO',
+  '옥타': 'OKTA', '인튜이트': 'INTU', '워크데이': 'WDAY',
+  '뱅가드': 'VOO', '뱅가드전체': 'VTI',
+}
+
 // 인기 미국 ETF / 주식 내장 맵
 const US_STOCKS: Array<{ name: string; ticker: string; desc: string }> = [
   { name:'SPY',  ticker:'SPY',  desc:'SPDR S&P 500 ETF' },
@@ -222,20 +251,58 @@ async function searchStocks(query: string): Promise<SearchResult[]> {
   const isKorean = /[가-힣]/.test(q)
   const isNumber = /^\d+$/.test(q)
 
-  // ── 1. 한국 주식 검색 ──
-  if (isKorean || isNumber || q.toUpperCase().startsWith('KODEX') || q.toUpperCase().startsWith('TIGER') || q.toUpperCase().startsWith('KBSTAR') || q.toUpperCase().startsWith('HANARO')) {
+  // ── 1. 한국어 쿼리 처리 ──
+  if (isKorean) {
+    // 1-A. 미국 주식 한글명 딕셔너리 매칭
+    const koMatches = Object.entries(US_KO_MAP).filter(([k]) => k.includes(q))
+    koMatches.slice(0, 5).forEach(([koName, ticker]) => {
+      const usSt = US_STOCKS.find(s => s.ticker === ticker)
+      addResult({ name: koName + ' (' + ticker + ')', ticker, market: 'US', desc: usSt?.desc || ticker, isKorean: false })
+    })
+
+    // 1-B. 네이버 금융 자동완성 (한국 주식 실시간 검색)
+    try {
+      const naverUrl = `https://ac.finance.naver.com/ac?q=${encodeURIComponent(q)}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8`
+      const naverRes = await fetch(naverUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com', 'Accept': 'application/json' }
+      })
+      if (naverRes.ok) {
+        const naverJson = await naverRes.json() as { items?: string[][][] }
+        const items = naverJson?.items?.[0] || []
+        items.slice(0, 10).forEach((item) => {
+          const name = item[0], code = item[1]
+          if (name && code && /^\d{6}$/.test(code)) {
+            addResult({ name, ticker: code, market: 'KR', isKorean: true })
+          }
+        })
+      }
+    } catch (_) { /* 네이버 실패 시 KRX 폴백 */ }
+
+    // 1-C. KRX 폴백 (네이버 결과 부족할 때)
+    if (results.filter(r => r.isKorean).length < 3) {
+      const krxList = await fetchKrxList()
+      const matches = krxList.filter(s => s.name.toLowerCase().includes(qLower))
+      matches.sort((a, b) => {
+        const aE = a.name.toLowerCase() === qLower ? 0 : a.name.toLowerCase().startsWith(qLower) ? 1 : 2
+        const bE = b.name.toLowerCase() === qLower ? 0 : b.name.toLowerCase().startsWith(qLower) ? 1 : 2
+        return aE - bE
+      })
+      matches.slice(0, 10).forEach(s => addResult({ ...s, isKorean: true }))
+    }
+  }
+
+  // ── 숫자(종목코드) 검색 ──
+  if (isNumber) {
     const krxList = await fetchKrxList()
-    const matches = krxList.filter(s => {
-      if (isNumber) return s.ticker.startsWith(q)
-      return s.name.toLowerCase().includes(qLower)
-    })
-    // 정렬: 정확 매칭 → 시작 매칭 → 포함 매칭
-    matches.sort((a, b) => {
-      const aExact = a.name.toLowerCase() === qLower ? 0 : a.name.toLowerCase().startsWith(qLower) ? 1 : 2
-      const bExact = b.name.toLowerCase() === qLower ? 0 : b.name.toLowerCase().startsWith(qLower) ? 1 : 2
-      return aExact - bExact
-    })
-    matches.slice(0, 15).forEach(s => addResult({ ...s, isKorean: true }))
+    krxList.filter(s => s.ticker.startsWith(q)).slice(0, 8)
+      .forEach(s => addResult({ ...s, isKorean: true }))
+  }
+
+  // ── ETF 영문 접두어 검색 ──
+  if (!isKorean && (q.toUpperCase().startsWith('KODEX') || q.toUpperCase().startsWith('TIGER') || q.toUpperCase().startsWith('KBSTAR') || q.toUpperCase().startsWith('HANARO'))) {
+    const krxList = await fetchKrxList()
+    krxList.filter(s => s.name.toLowerCase().includes(qLower)).slice(0, 8)
+      .forEach(s => addResult({ ...s, isKorean: true }))
   }
 
   // ── 2. 미국 주식/ETF 검색 (영문 입력 시) ──
