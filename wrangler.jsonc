@@ -8,5 +8,26 @@
   ],
   "rules": [
     { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }
-  ]
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CUSTOM_TICKERS",
+      "id": "6479c2d147114e7085341792bc5289f3"
+    }
+  ],
+  // ── 한국투자증권 API (비민감 설정값) ────────────────
+  // 민감 자격증명은 wrangler secret put 으로 별도 설정:
+  //   npx wrangler secret put KIS_APP_KEY
+  //   npx wrangler secret put KIS_APP_SECRET
+  //   npx wrangler secret put KIS_ACCOUNT_NO
+  // 로컬 개발은 .dev.vars 파일 사용 (git 제외됨)
+  "vars": {
+    "KIS_IS_REAL": "false"
+  },
+  // 자산 스냅샷 자동 기록 크론
+  // KST 오후 6시 = UTC 09:00  (한국 장 마감 후)
+  // KST 오전 8시 = UTC 23:00  (미국 장 마감 후, 전날 UTC)
+  "triggers": {
+    "crons": ["0 9 * * *", "0 23 * * *"]
+  }
 }

@@ -4,6 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## ★★★ 절대 불가침 전제 (모든 규칙보다 상위, 예외 없음)
+
+> **모든 업데이트·수정·리팩토링·버그 수정 작업에서, Google Sheets 스프레드시트에 저장된 데이터는 절대로 삭제·변경·수정·축소 등 어떠한 형태로도 변형하지 않는다.**
+
+- 코드 수정이 데이터 손실 또는 변형 가능성을 1%라도 포함하면 **작업을 즉시 중단하고 사용자에게 경고**한다.
+- `saveToSheets`, `clearValues`, `batchUpdate` 등 쓰기 API를 포함하는 모든 변경은 이 전제에 위배되지 않는지 먼저 검토한다.
+- 스프레드시트 데이터의 무결성은 코드 편의성·성능·구조 개선보다 **항상 우선**한다.
+- 테스트·디버깅 중에도 실제 사용자 시트 데이터에 쓰기 동작을 수행해서는 안 된다.
+
+---
+
 ## ★ 최상위 규칙 (모든 작업에 최우선 적용)
 
 ### 1. 기능·인터페이스 무단 변경 금지
@@ -195,3 +206,83 @@ function getPhase(s) {
 - **인메모리 캐시**: Workers 재시작 시 초기화됨 (stateless)
 - **차트 무한루프 방지**: `loadMiniChart` 완료 후 `refreshPhaseBlock(s)` 호출 (전체 `renderSignalPanel` 재호출 금지)
 - **Google OAuth**: `redirect_uri_mismatch` 발생 시 Google Cloud Console에서 JavaScript origins에 배포 URL 추가 필요 (반영 최대 수 시간 소요)
+
+---
+
+## 🛡️ 시스템 안정성 및 금융 데이터 처리 원칙
+
+> 아래 3가지 원칙은 코드 작성·수정 시 항상 준수해야 하는 **절대 원칙**이다.
+
+### 원칙 1. 금융 데이터 정확성 — 수정주가(Adjusted Close) 최우선
+모든 주가 데이터 및 이동평균선(10이평선 등) 계산 시 **수정주가(Adjusted Close)**를 무조건 최우선 기준으로 사용한다.
+액면분할·배당·유상증자가 반영되지 않은 원주가(Raw Close)를 이평선 계산에 쓰면 투자 판단이 왜곡된다.
+
+| 경로 | 적용 방식 | 위치 |
+|------|----------|------|
+| Yahoo Finance | `adjclose` 우선, 없으면 `quote.close` 폴백 | `src/index.tsx` `fetchMa10Data()` line ~925 |
+| KIS OpenAPI | `FID_ORG_ADJ_PRC: '1'` (수정주가) | `src/kis_api.ts` `fetchKisDomesticMonthly()` |
+
+**⚠️ 절대 금지**: `FID_ORG_ADJ_PRC: '0'`(원주가)으로 되돌리거나, Yahoo `quote.close`를 직접 사용하는 것.
+
+---
+
+### 원칙 2. 데이터 무결성(Data Integrity) — 잔고·거래 트랜잭션 동기화
+`마스터데이터` 시트(잔고)와 `거래내역` 시트는 반드시 **하나의 Promise.all 트랜잭션**으로 묶어 동기화한다.
+앱 로드 시 `crossCheckInventory()`가 자동 실행되어 두 시트의 수량 불일치를 Toast로 경고한다.
+
+```javascript
+// 거래 추가/삭제/수정 시 반드시 이 패턴 사용 (한 쪽만 저장 금지)
+Promise.all([saveTradesToSheets(), saveMasterRows()])
+
+// 앱 로드 완료 시 자동 호출 — 수량 불일치 경보
+crossCheckInventory()  // public/index.html, loadFromSheets() 마지막 then
+```
+
+**⚠️ 절대 금지**: `saveTradesToSheets()` 또는 `saveMasterRows()` 중 하나만 단독 호출해 두 시트를 다른 상태로 만드는 것.
+**⚠️ 절대 금지**: Google Sheets 백엔드 데이터를 임의로 삭제·수정·축소하는 코드 작성.
+
+---
+
+### 원칙 3. 무중단 예외 처리(Graceful Degradation) — White Screen 방지
+모든 외부 API(KIS, Yahoo, Google Sheets 등) 통신은 반드시 아래 패턴을 따른다.
+
+```javascript
+// 표준 패턴
+btn.disabled = true;  // 중복 클릭 방지
+btn.innerHTML = '<i class="fas fa-spinner spin"></i> 로딩 중...';  // Loading Spinner
+fetch('/api/...')
+  .then(function(r){ return r.json(); })
+  .then(function(data) {
+    // 성공 처리
+    toast('완료!', 'success');
+  })
+  .catch(function(e) {
+    // 절대 앱이 멈추거나 흰 화면이 되어선 안 됨
+    console.error(e);
+    toast('조회 실패. 잠시 후 다시 시도해주세요.', 'error');
+  })
+  .finally(function() {
+    btn.disabled = false;  // 버튼 원복
+    btn.innerHTML = '원래 텍스트';
+  });
+```
+
+**KIS 미설정 시 자동 Yahoo 폴백**: `isKisConfigured()` → false 이면 Yahoo로 자동 전환 (사용자에게 투명하게).
+**Google Sheets 로드 실패**: `appData.stocks = []` 세팅 후 Toast 경고 — 앱 화면은 유지.
+
+---
+
+## 🔒 반복 강조 사항 (위반 시 즉시 원복)
+
+아래는 사용자가 반복해서 강조한 핵심 규칙이다.
+
+1. **지시 외 수정 절대 금지**: 요청받은 항목 외 기능·인터페이스·수식·데이터 구조는 어떤 이유로도 임의 변경·축소·삭제 금지. (최상위 규칙 §1 참조)
+2. **Sheets 백데이터 보호**: Google Sheets에 저장된 데이터(마스터데이터, 거래내역, 스냅샷, 모의투자)를 코드 변경 중 임의로 삭제·수정·변경 금지.
+3. **전량 매도 종목 처리**:
+   - `qty === 0` 종목 = 전량 매도 완료
+   - **대시보드**: 하단 "전량 매도 관찰 중" 토글에 흐리게 표시
+   - **마스터 데이터**: 하단 토글에 모아서 표시
+   - **시그널·현금흐름**: 완전 제외 (필터링)
+   - **월간 결산표**: 반드시 포함 (매도 시점 수익 기록이 핵심)
+4. **모의투자 탭 독립성**: `SH_MOCK = "모의투자"` 시트는 실제 포트폴리오 데이터(`SH_MASTER`, `SH_TRADE`)와 절대 혼용하지 않는다.
+5. **4단계 국면 판단·잡초 판별 로직**: 어떤 최적화나 리팩토링 중에도 `getPhase()` / `isWeed()` 함수 내부 수식 변경 금지. (최상위 규칙 §2 참조)
