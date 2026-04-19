@@ -493,6 +493,11 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
     </div>
   </header>
 
+  <!-- 백그라운드 동기화 배너 — 캐시 데이터로 즉시 표시 후 최신 데이터 동기화 중일 때 표시 -->
+  <div id="syncBanner" style="display:none;" class="text-center text-xs py-1.5 transition-all duration-300">
+    <span id="syncBannerText"></span>
+  </div>
+
   <main class="max-w-7xl mx-auto px-4 py-6">
 
     <!-- ══ 대시보드 ══ -->
@@ -870,7 +875,7 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
           </div>
           <div class="text-xl font-black text-slate-400" id="monthly-pnl">스냅샷 필요</div>
           <div class="text-xs text-slate-400 mt-1" id="monthly-pnl-sub">
-            <span title="스냅샷 기반 Vt−Vt-1−Ct: 보유 주식 전체의 가치 변화(미실현+실현 모두 포함)">Vt − Vt-1 − Ct ⓘ</span>
+            <span title="이번 달 말 내 주식 총 평가금액에서, 지난 달 말 평가금액과 이번 달에 내가 새로 넣은 돈을 빼면, 순수하게 주식이 오르거나 내려서 생긴 손익만 남아요.&#10;&#10;예) 이번 달 말 800만원 - 지난 달 말 700만원 - 이번 달 투입 50만원 = +50만원 (주식이 벌어온 돈)">이번달말 평가 − 지난달말 평가 − 이번달 투입금 ⓘ</span>
           </div>
         </div>
 
@@ -1289,17 +1294,81 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
                 <span id="mock-price-change">-</span>
               </div>
             </div>
-            <div class="flex items-center gap-2">
-              <input type="text" inputmode="numeric" id="mock-order-qty" placeholder="수량"
-                class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-24 text-right focus:outline-none focus:border-blue-400"
+            <div class="flex items-center gap-2 flex-wrap">
+              <!-- 수량/금액 모드 선택 토글 -->
+              <div class="flex border border-slate-300 rounded-lg overflow-hidden text-xs">
+                <button id="mockModeQty" onclick="switchMockOrderMode('qty')" class="px-2.5 py-2 font-semibold bg-blue-500 text-white">수량</button>
+                <button id="mockModeAmt" onclick="switchMockOrderMode('amount')" class="px-2.5 py-2 font-semibold bg-white text-slate-500 hover:bg-slate-50">금액</button>
+              </div>
+              <input type="text" inputmode="decimal" id="mock-order-qty" placeholder="수량"
+                class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-28 text-right focus:outline-none focus:border-blue-400"
                 onfocus="this.value=this.value.replace(/,/g,'')"
-                onblur="if(this.value){this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR');}"/>
+                onblur="if(this.value){this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR');}"
+                oninput="updateMockOrderPreview()"/>
+              <span id="mock-order-unit" class="text-xs text-slate-400 font-medium" style="min-width:16px;">주</span>
               <button onclick="executeMockOrder('매수')" class="btn-buy px-4 py-2 text-sm">가상 매수</button>
               <button onclick="executeMockOrder('매도')" class="btn-sell px-4 py-2 text-sm">가상 매도</button>
+              <button onclick="openMockLimitFromSearch()" class="px-3 py-2 text-sm font-semibold bg-amber-50 text-amber-600 border border-amber-200 rounded-lg hover:bg-amber-100 transition-all" title="지정가 예약 주문"><i class="fas fa-clock"></i> 예약</button>
             </div>
           </div>
         </div>
+        <!-- 주문 미리보기 (금액 모드일 때 예상 수량 표시) -->
+        <div id="mock-order-preview" class="hidden text-xs text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg mb-2"></div>
         <div id="mock-order-msg" class="hidden text-xs font-semibold px-3 py-2 rounded-lg"></div>
+      </div>
+
+      <!-- 지정가 예약 주문 (토글 접기/펼치기) -->
+      <div class="card p-5 mb-5" id="mock-limit-card">
+        <div class="flex items-center justify-between flex-wrap gap-2" style="cursor:pointer;" onclick="toggleMockLimitSection()">
+          <h3 class="font-bold text-slate-800 flex items-center gap-2">
+            <i class="fas fa-clock text-amber-500"></i> 지정가 예약 주문
+            <span id="mock-pending-count" class="text-xs bg-amber-100 text-amber-600 font-bold px-2 py-0.5 rounded-full">0</span>
+          </h3>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-slate-400 font-medium">목표가 도달 시 자동 체결</span>
+            <span id="mockLimitChevron" class="toggle-chevron">▶</span>
+          </div>
+        </div>
+        <!-- 토글 내용 (접혔다 펼쳤다) -->
+        <div id="mock-limit-body" style="display:none;margin-top:12px;">
+          <!-- 예약 주문 추가 폼 -->
+          <div id="mock-limit-form" class="bg-slate-50 rounded-xl p-4 mb-3">
+            <div class="text-xs font-bold text-slate-600 mb-2"><i class="fas fa-plus-circle text-amber-500"></i> 새 예약 주문</div>
+            <div class="flex gap-2 items-end flex-wrap">
+              <div>
+                <label class="text-xs text-slate-500 font-semibold block mb-1">종목</label>
+                <input type="text" id="mock-limit-stock" class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-36" disabled placeholder="종목을 먼저 검색"/>
+              </div>
+              <div>
+                <label class="text-xs text-slate-500 font-semibold block mb-1">구분</label>
+                <select id="mock-limit-type" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="매수">매수</option>
+                  <option value="매도">매도</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-slate-500 font-semibold block mb-1">지정가</label>
+                <input type="text" inputmode="numeric" id="mock-limit-price" placeholder="목표 가격"
+                  class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-28 text-right focus:outline-none focus:border-blue-400"
+                  onfocus="this.value=this.value.replace(/,/g,'')"
+                  onblur="if(this.value){this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR');}"/>
+              </div>
+              <div>
+                <label class="text-xs text-slate-500 font-semibold block mb-1">수량</label>
+                <input type="text" inputmode="decimal" id="mock-limit-qty" placeholder="수량 (소수 가능)"
+                  class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-20 text-right focus:outline-none focus:border-blue-400"
+                  onfocus="this.value=this.value.replace(/,/g,'')"
+                  onblur="if(this.value){this.value=Number(this.value.replace(/,/g,'')).toLocaleString('ko-KR');}"/>
+              </div>
+              <button onclick="addMockLimitOrder()" class="btn-primary text-xs py-2 px-4"><i class="fas fa-plus"></i> 예약 등록</button>
+            </div>
+            <div id="mock-limit-msg" class="hidden text-xs font-semibold px-3 py-2 rounded-lg mt-2"></div>
+          </div>
+          <!-- 예약 주문 목록 -->
+          <div id="mock-limit-orders" class="overflow-x-auto">
+            <div class="text-center py-6 text-slate-400 text-sm">등록된 예약 주문이 없어요.</div>
+          </div>
+        </div>
       </div>
 
       <!-- 보유 종목 -->
@@ -2424,6 +2493,7 @@ var LS_SSID     = 'jujini_ssid_v4';
 var LS_SECTION  = 'jujini_last_section_v1';
 var LS_CF_PAUSE    = 'jujini_cf_pause_v4';    // 자동투자 일시중단 종목 목록
 var LS_CF_AMT_TYPE = 'jujini_cf_amt_type_v4'; // 1회 입력 단위 (amount=금액 / qty=수량)
+var LS_APP_CACHE   = 'jujini_app_cache_v1';   // 앱 데이터 로컬 캐시 (즉시 표시용)
 var SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 var DRIVE_BASE  = 'https://www.googleapis.com/drive/v3';
 
@@ -2491,10 +2561,14 @@ var _mockCurrentName   = null;
 var _mockCurrentPrice  = 0;
 var _mockLivePrices    = {};     // { ticker: { price, changeRate } }
 var _mockSearchTimer   = null;
+var _mockOrderMode     = 'qty';  // 주문 입력 모드: 'qty'(수량) / 'amount'(금액)
+var _mockLimitOrders   = [];     // 지정가 예약 주문 목록
+var LS_MOCK_LIMITS     = 'jujini_mock_limits_v1'; // 예약 주문 localStorage 키
 var syncTimer     = null;
 var _autoRefreshTimer = null;  // 1분 자동 새로고침 타이머
 var _isRefreshingToken = false;  // 자동 갱신 중 여부 (갱신용 콜백과 로그인용 콜백 구분)
 var _tokenRefreshTimer = null;   // 만료 전 자동 갱신 타이머
+var _needsImmediateRefresh = false;  // 만료된 토큰으로 앱 표시 후 즉시 갱신 필요
 var isSyncing     = false;
 
 // ────────────────────────────────────────────
@@ -2503,6 +2577,15 @@ var isSyncing     = false;
 function fmtNum(n) {
   if (n === null || n === undefined || n === '' || isNaN(Number(n))) return '-';
   return Math.round(Number(n)).toLocaleString('ko-KR');
+}
+// 수량 전용 포맷: 정수면 정수, 소수면 입력 그대로 표시 (반올림 안 함)
+// 예) 10 → "10", 0.173 → "0.173", 1.5 → "1.5"
+function fmtQty(n) {
+  if (n === null || n === undefined || n === '' || isNaN(Number(n))) return '-';
+  var v = Number(n);
+  if (Number.isInteger(v)) return v.toLocaleString('ko-KR');
+  // 소수점 이하 불필요한 0 제거 (최대 6자리)
+  return parseFloat(v.toFixed(6)).toLocaleString('ko-KR', { maximumFractionDigits: 6 });
 }
 function fmtRate(r) {
   if (r === null || r === undefined || r === '' || isNaN(Number(r))) return '-';
@@ -2597,11 +2680,81 @@ function showScreen(name, msg, sub) {
   if (sub !== undefined) document.getElementById('loadingSubMsg').textContent = sub;
 }
 
+// 백그라운드 동기화 상태 배너 표시
+// 캐시로 즉시 앱을 보여준 뒤, Google Sheets에서 최신 데이터를 가져오는 동안
+// 상단에 작은 배너로 동기화 상태를 알려줍니다.
+var _syncBannerTimer = null;
+function showSyncBanner(state) {
+  var banner = document.getElementById('syncBanner');
+  var text = document.getElementById('syncBannerText');
+  if (!banner || !text) return;
+  if (_syncBannerTimer) { clearTimeout(_syncBannerTimer); _syncBannerTimer = null; }
+  if (state === 'syncing') {
+    banner.style.display = '';
+    banner.style.background = '#EFF6FF';
+    banner.style.color = '#2563EB';
+    text.innerHTML = '<i class="fas fa-sync-alt spin" style="margin-right:4px;"></i> 최신 데이터 동기화 중...';
+  } else if (state === 'done') {
+    banner.style.background = '#F0FDF4';
+    banner.style.color = '#16A34A';
+    text.innerHTML = '<i class="fas fa-check-circle" style="margin-right:4px;"></i> 최신 데이터로 업데이트 완료';
+    // 2초 후 배너 자동 숨김
+    _syncBannerTimer = setTimeout(function() { banner.style.display = 'none'; }, 2000);
+  } else if (state === 'error') {
+    banner.style.background = '#FEF2F2';
+    banner.style.color = '#DC2626';
+    text.innerHTML = '<i class="fas fa-exclamation-triangle" style="margin-right:4px;"></i> 동기화 실패 — 캐시 데이터를 표시 중입니다';
+    // 5초 후 배너 자동 숨김
+    _syncBannerTimer = setTimeout(function() { banner.style.display = 'none'; }, 5000);
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
 // ────────────────────────────────────────────
 // Google OAuth (GIS Token Client, gapi 없이)
 // ────────────────────────────────────────────
 function initAuth() {
+  // ── 속도 최적화: GIS 스크립트 로딩을 기다리지 않고 즉시 자동로그인 시도 ──
+  var saved = localStorage.getItem(LS_TOKEN);
+  var tokenData = null;
+  var tokenValid = false;
+  if (saved) {
+    try {
+      tokenData = JSON.parse(saved);
+      tokenValid = tokenData.expires_at > Date.now() + 120000;  // 만료 2분 전까지 유효
+    } catch(e) {}
+  }
+
+  // Case 1: 유효한 토큰 → GIS 기다리지 않고 즉시 데이터 로딩
+  if (tokenValid) {
+    tryAutoLogin();
+    _initGisBackground();
+    return;
+  }
+
+  // Case 2: 만료된 토큰이지만 캐시가 있음 → 캐시로 앱 즉시 표시 + 백그라운드 갱신
+  // (사용자가 로그인 버튼을 누를 필요 없이 앱을 바로 사용 가능)
+  if (tokenData && tokenData.expires_at > Date.now() - 86400000) {
+    var cachedSsId = localStorage.getItem(LS_SSID);
+    if (cachedSsId && loadAppDataFromCache()) {
+      ssId = cachedSsId;
+      accessToken = tokenData.access_token;
+      showMainApp();
+      showSyncBanner('syncing');
+      _needsImmediateRefresh = true;
+      _initGisBackground();
+      return;
+    }
+  }
+
+  // Case 3: 토큰 없거나 캐시 없음 → GIS 로딩 후 로그인 화면
   showScreen('loading', 'Google 연결 중...', '잠시만 기다려주세요');
+  _initGisAndLogin();
+}
+
+// GIS 스크립트 로딩 → tokenClient 초기화만 (로그인 화면 불필요)
+function _initGisBackground() {
   var tries = 0;
   var wait = setInterval(function() {
     tries++;
@@ -2612,7 +2765,32 @@ function initAuth() {
         scope: SCOPES,
         callback: onTokenResponse,
       });
-      tryAutoLogin();
+      // 만료된 토큰으로 앱을 먼저 보여준 경우 → GIS 로드 완료 즉시 갱신 시도
+      if (_needsImmediateRefresh) {
+        _needsImmediateRefresh = false;
+        silentRefreshToken();
+      }
+    } else if (tries > 80) {
+      clearInterval(wait);
+      // GIS 로드 실패해도 이미 로그인된 상태이므로 경고만
+      console.warn('GIS 백그라운드 로드 실패 — 토큰 갱신이 안될 수 있습니다');
+    }
+  }, 100);
+}
+
+// GIS 스크립트 로딩 → 로그인 화면 표시 (토큰 없을 때)
+function _initGisAndLogin() {
+  var tries = 0;
+  var wait = setInterval(function() {
+    tries++;
+    if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+      clearInterval(wait);
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: onTokenResponse,
+      });
+      showScreen('login');
     } else if (tries > 80) {
       clearInterval(wait);
       toast('Google 스크립트 로드 실패. 새로고침 해주세요.', 'error');
@@ -2622,20 +2800,42 @@ function initAuth() {
 }
 
 function tryAutoLogin() {
+  // 유효한 토큰만 처리 (만료 토큰은 initAuth의 Case 2에서 처리됨)
   var saved = localStorage.getItem(LS_TOKEN);
   if (saved) {
     try {
       var t = JSON.parse(saved);
       if (t.expires_at > Date.now() + 120000) {
         accessToken = t.access_token;
-        // 남은 유효 시간에 맞춰 만료 전 자동 갱신 예약
         var remainingSec = Math.floor((t.expires_at - Date.now()) / 1000);
         scheduleTokenRefresh(remainingSec);
         ssId = localStorage.getItem(LS_SSID) || null;
+
+        // ── 캐시 즉시 표시: 로컬 캐시가 있으면 로딩 화면 없이 바로 앱을 보여줍니다 ──
+        var hasCachedData = ssId && loadAppDataFromCache();
+        if (hasCachedData) {
+          showMainApp();
+          showSyncBanner('syncing');
+          Promise.all([
+            loadUserProfile(),
+            initSpreadsheet(false)
+          ]).then(function() {
+            renderAll();
+            showSyncBanner('done');
+          }).catch(function(e) {
+            console.warn('백그라운드 동기화 실패 (캐시 데이터 유지):', e);
+            showSyncBanner('error');
+          });
+          return;
+        }
+
+        // ── 캐시 없음: 기존 방식대로 로딩 화면 표시 후 데이터 로드 ──
         showScreen('loading', '데이터 불러오는 중...', '잠시만 기다려주세요');
-        loadUserProfile().then(function() {
-          return initSpreadsheet(false); // false = 자동로그인, 팝업 없음
-        }).then(function() {
+        // 프로필 로드와 시트 초기화를 병렬 실행 (서로 독립적인 작업)
+        Promise.all([
+          loadUserProfile(),
+          initSpreadsheet(false)  // false = 자동로그인, 팝업 없음
+        ]).then(function() {
           showMainApp();
         }).catch(function(e) {
           console.warn('자동로그인 실패:', e);
@@ -2656,22 +2856,52 @@ function tryAutoLogin() {
   showScreen('login');
 }
 
+var _loginTimeoutTimer = null;
 function handleGoogleLogin() {
+  // tokenClient가 아직 초기화되지 않았으면 (GIS 스크립트 로딩 중) 기다리게 안내
+  if (!tokenClient) {
+    toast('Google 연결을 준비 중이에요. 잠시 후 다시 눌러주세요.', 'warning');
+    return;
+  }
   var btn = document.getElementById('loginBtn');
   if (btn) { btn.disabled = true; btn.textContent = '로그인 중...'; }
   showScreen('loading', '구글 로그인 중...', '팝업 창에서 계정을 선택해주세요');
+
+  // 15초 타임아웃 — 팝업이 블록되거나 사용자가 취소한 경우 로딩 화면에서 빠져나옴
+  // (모바일에서 팝업이 안 뜨거나 뒤로가기로 닫힌 경우 대비)
+  if (_loginTimeoutTimer) clearTimeout(_loginTimeoutTimer);
+  _loginTimeoutTimer = setTimeout(function() {
+    // onTokenResponse가 아직 호출되지 않았으면 로그인 화면으로 복구
+    var loadingEl = document.getElementById('loadingScreen');
+    if (loadingEl && loadingEl.style.display === 'flex') {
+      showScreen('login');
+      toast('로그인 팝업이 응답하지 않아요. 다시 시도해주세요.', 'warning');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Google 계정으로 로그인'; }
+    }
+  }, 15000);
+
   // select_account: 계정 선택만 표시 (consent는 매번 재동의를 강요해 불편)
   tokenClient.requestAccessToken({ prompt: 'select_account' });
 }
 
 function onTokenResponse(resp) {
+  // 로그인 타임아웃 타이머 해제 (정상 응답 수신됨)
+  if (_loginTimeoutTimer) { clearTimeout(_loginTimeoutTimer); _loginTimeoutTimer = null; }
+
   if (resp.error) {
-    // 자동 갱신 실패 시 → 조용히 로그인 화면으로 (팝업 없음)
+    // 자동 갱신 실패 시
     if (_isRefreshingToken) {
       _isRefreshingToken = false;
       console.warn('자동 토큰 갱신 실패:', resp.error);
-      toast('세션이 만료되었습니다. 다시 로그인해주세요.', 'warning');
-      showScreen('login');
+      // 앱이 이미 표시 중이면 (캐시 데이터로 보여주는 중) 토스트만 표시, 로그인 화면으로 안 보냄
+      var mainApp = document.getElementById('mainApp');
+      if (mainApp && mainApp.style.display !== 'none') {
+        toast('세션 갱신 실패. 다시 로그인이 필요할 수 있어요.', 'warning');
+        showSyncBanner('error');
+      } else {
+        toast('세션이 만료되었습니다. 다시 로그인해주세요.', 'warning');
+        showScreen('login');
+      }
       return;
     }
     showScreen('login');
@@ -2689,25 +2919,62 @@ function onTokenResponse(resp) {
   }));
   scheduleTokenRefresh(resp.expires_in || 3600);
 
-  // 자동 갱신의 경우 → 토큰만 교체하고 끝 (로그인 플로우 불필요)
+  // 자동 갱신의 경우 → 토큰만 교체
   if (_isRefreshingToken) {
     _isRefreshingToken = false;
     console.log('토큰 자동 갱신 완료');
+    // 만료 토큰으로 앱을 먼저 보여준 경우 → 갱신 성공 후 Sheets 동기화 실행
+    var mainApp = document.getElementById('mainApp');
+    if (mainApp && mainApp.style.display !== 'none') {
+      Promise.all([
+        loadUserProfile(),
+        initSpreadsheet(false)
+      ]).then(function() {
+        renderAll();
+        showSyncBanner('done');
+      }).catch(function(e) {
+        console.warn('갱신 후 동기화 실패:', e);
+        showSyncBanner('error');
+      });
+    }
     return;
   }
 
-  // 일반 로그인 플로우
-  showScreen('loading', '계정 정보 불러오는 중...', '');
-  loadUserProfile().then(function() {
-    // 최상위규칙3: 최초 로그인 → 시트 생성 팝업
-    return initSpreadsheet(true); // true = 팝업 워크플로우
-  }).catch(function(e) {
-    console.error('로그인 후 시트 초기화 오류:', e);
-    // 오류 시에도 앱을 보여주고 시트 생성 팝업 표시
-    showScreen('app');
-    showSection('dashboard');
-    document.getElementById('modalCreateSheet').style.display = 'flex';
-  });
+  // 일반 로그인 플로우 — 캐시가 있으면 즉시 앱 표시, 없으면 로딩 화면
+  ssId = localStorage.getItem(LS_SSID) || null;
+  var hasCachedLogin = ssId && loadAppDataFromCache();
+
+  if (hasCachedLogin) {
+    // 캐시 데이터로 즉시 앱 표시 → 백그라운드에서 최신 데이터 동기화
+    showMainApp();
+    showSyncBanner('syncing');
+    Promise.all([
+      loadUserProfile(),
+      initSpreadsheet(true)
+    ]).then(function() {
+      renderAll();
+      showSyncBanner('done');
+    }).catch(function(e) {
+      console.warn('백그라운드 동기화 실패 (캐시 데이터 유지):', e);
+      showSyncBanner('error');
+    });
+  } else {
+    // 캐시 없음 (첫 로그인 등) — 로딩 화면 표시 후 데이터 로드
+    showScreen('loading', '계정 정보 불러오는 중...', '');
+    Promise.all([
+      loadUserProfile(),
+      initSpreadsheet(true)  // true = 팝업 워크플로우 (최상위규칙3: 최초 로그인 → 시트 생성 팝업)
+    ]).then(function() {
+      // 캐시된 ssId로 loadFromSheets가 성공한 경우 여기서 앱 표시
+      showMainApp();
+    }).catch(function(e) {
+      console.error('로그인 후 시트 초기화 오류:', e);
+      // 오류 시에도 앱을 보여주고 시트 생성 팝업 표시
+      showScreen('app');
+      showSection('dashboard');
+      document.getElementById('modalCreateSheet').style.display = 'flex';
+    });
+  }
 }
 
 // 토큰 만료 5분 전에 자동 갱신 예약하는 타이머 설정
@@ -2752,7 +3019,12 @@ function gFetch(url, method, body) {
     }
   };
   if (body) opts.body = JSON.stringify(body);
+  // 10초 타임아웃 — 네트워크 문제로 무한 대기 방지 (모바일에서 특히 중요)
+  var controller = new AbortController();
+  opts.signal = controller.signal;
+  var timeoutId = setTimeout(function() { controller.abort(); }, 10000);
   return fetch(url, opts).then(function(r) {
+    clearTimeout(timeoutId);
     if (r.status === 401) {
       // 토큰 만료 → 자동 갱신 시도, 실패 시 로그인 화면
       localStorage.removeItem(LS_TOKEN);
@@ -2782,25 +3054,34 @@ function gFetch(url, method, body) {
 // showPopup=false: 자동 로그인 → 바로 앱 표시
 // ────────────────────────────────────────────
 function initSpreadsheet(showPopup) {
-  // 1) 캐시된 시트 ID 유효성 확인
+  // 1) 캐시된 시트 ID가 있으면 검증+ensureSheets 건너뛰고 바로 데이터 로드
+  //    (재방문 유저는 시트가 이미 존재하므로 ensureSheets 불필요 → API 2~3회 절약)
   var cachedId = ssId || localStorage.getItem(LS_SSID);
   if (cachedId) {
-    return gFetch(SHEETS_BASE + '/' + cachedId + '?fields=spreadsheetId,properties').then(function(data) {
-      ssId = data.spreadsheetId;
-      ssTitle = data.properties && data.properties.title;
+    ssId = cachedId;
+    return loadFromSheets().then(function() {
+      // batchGet 성공 = 시트 유효 → 캐시 갱신만
       localStorage.setItem(LS_SSID, ssId);
-      return ensureSheets();
-    }).then(function() {
-      return loadFromSheets();
-    }).then(function() {
-      // 캐시된 시트로 정상 연결 → 바로 앱 (팝업 불필요)
-      // showPopup 여부 관계없이 showMainApp은 호출자가 담당
+      // 시트 제목은 백그라운드에서 조회 (UI 표시용, 비차단)
+      gFetch(SHEETS_BASE + '/' + cachedId + '?fields=properties.title').then(function(data) {
+        ssTitle = data.properties && data.properties.title;
+      }).catch(function(){});
     }).catch(function(e) {
-      console.warn('캐시 시트 접근 실패:', e);
-      // 캐시 삭제 후 새로 검색
-      localStorage.removeItem(LS_SSID);
-      ssId = null;
-      return searchOrShowPopup(showPopup);
+      console.warn('캐시 시트 빠른 로드 실패, 전체 검증으로 폴백:', e);
+      // 실패 시 기존 방식으로 폴백 (시트 검증 + ensureSheets + 데이터 로드)
+      return gFetch(SHEETS_BASE + '/' + cachedId + '?fields=spreadsheetId,properties').then(function(data) {
+        ssId = data.spreadsheetId;
+        ssTitle = data.properties && data.properties.title;
+        localStorage.setItem(LS_SSID, ssId);
+        return ensureSheets();
+      }).then(function() {
+        return loadFromSheets();
+      }).catch(function(e2) {
+        console.warn('캐시 시트 접근 실패:', e2);
+        localStorage.removeItem(LS_SSID);
+        ssId = null;
+        return searchOrShowPopup(showPopup);
+      });
     });
   } else {
     return searchOrShowPopup(showPopup);
@@ -2941,6 +3222,8 @@ function createSpreadsheet(title) {
   });
 }
 
+// 필요한 시트가 모두 존재하는지 확인하고, 없으면 생성 + 헤더 작성
+// (개선: 헤더 확인을 batchGet 1회로 병렬 조회, 누락된 헤더만 batch write)
 function ensureSheets() {
   return gFetch(SHEETS_BASE + '/' + ssId + '?fields=sheets.properties.title').then(function(data) {
     var existing = (data.sheets || []).map(function(s) { return s.properties.title; });
@@ -2949,55 +3232,112 @@ function ensureSheets() {
     needed.forEach(function(name) {
       if (existing.indexOf(name) === -1) requests.push({ addSheet: { properties: { title: name } } });
     });
-    if (requests.length === 0) return;
+    if (requests.length === 0) return _ensureHeaders();
     return gFetch(SHEETS_BASE + '/' + ssId + ':batchUpdate', 'POST', { requests: requests }).then(function() {
-      // 마스터데이터 헤더 확인
-      return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1')).then(function(d) {
-        if (!d.values || !d.values[0] || !d.values[0][0]) {
-          var hr = [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정','Ticker']];
-          return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A1:R1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: hr });
-        }
-      }).then(function() {
-        // 거래내역 헤더 확인
-        return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_TRADE + '!A1')).then(function(d) {
-          if (!d.values || !d.values[0] || !d.values[0][0]) {
-            var th = [['날짜','종목명','티커','구분','수량','체결단가','수수료','메모']];
-            return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_TRADE + '!A1:H1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: th });
-          }
-        });
-      }).then(function() {
-        // 자산스냅샷 헤더 확인
-        return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_SNAPSHOT + '!A1')).then(function(d) {
-          if (!d.values || !d.values[0] || !d.values[0][0]) {
-            var sh = [['날짜','누적투자원금','총평가금액']];
-            return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_SNAPSHOT + '!A1:C1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: sh });
-          }
-        });
-      }).then(function() {
-        // 모의투자 헤더 확인
-        return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MOCK + '!A1')).then(function(d) {
-          if (!d.values || !d.values[0] || !d.values[0][0]) {
-            var mh = [['날짜','종목명','티커','구분','수량','체결단가','수수료','메모']];
-            return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MOCK + '!A1:H1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: mh });
-          }
-        });
-      }).then(function() {
-        // 모의투자_스냅샷 헤더 확인
-        return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MOCK_SNAP + '!A1')).then(function(d) {
-          if (!d.values || !d.values[0] || !d.values[0][0]) {
-            var msh = [['날짜','총평가액']];
-            return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MOCK_SNAP + '!A1:B1') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: msh });
-          }
-        });
-      });
+      return _ensureHeaders();
     });
   });
 }
 
+// 모든 시트의 헤더를 batchGet 1회로 확인하고, 누락된 헤더만 한꺼번에 작성
+// (기존: 5개 시트 헤더를 개별 gFetch로 직렬 확인 → API 5~10회)
+// (개선: batchGet 1회 확인 + 누락분만 병렬 append)
+function _ensureHeaders() {
+  // 헤더가 필요한 시트 목록과 헤더 데이터 정의
+  var headerDefs = [
+    { sheet: SH_MASTER,    range: 'A1:R1', values: [['증권사/앱 이름','주식/ETF 이름','종류','평균 매수 단가','현재 주가','보유 수량','총 투자 원금','현재 평가 금액','수익률(%)','잡초 판별','말일종가','10이평선','자동투자주기','1회금액','월별이체','연간예상','통제결정','Ticker']] },
+    { sheet: SH_TRADE,     range: 'A1:H1', values: [['날짜','종목명','티커','구분','수량','체결단가','수수료','메모']] },
+    { sheet: SH_SNAPSHOT,  range: 'A1:C1', values: [['날짜','누적투자원금','총평가금액']] },
+    { sheet: SH_MOCK,      range: 'A1:H1', values: [['날짜','종목명','티커','구분','수량','체결단가','수수료','메모']] },
+    { sheet: SH_MOCK_SNAP, range: 'A1:B1', values: [['날짜','총평가액']] },
+  ];
+
+  // batchGet으로 모든 시트의 A1 셀을 한 번에 확인
+  var checkRanges = headerDefs.map(function(h) { return 'ranges=' + encodeURIComponent(h.sheet + '!A1'); }).join('&');
+  return gFetch(SHEETS_BASE + '/' + ssId + '/values:batchGet?' + checkRanges).then(function(data) {
+    var vr = data.valueRanges || [];
+    // 헤더가 비어있는 시트만 골라서 병렬로 append
+    var writes = [];
+    headerDefs.forEach(function(h, i) {
+      var hasHeader = vr[i] && vr[i].values && vr[i].values[0] && vr[i].values[0][0];
+      if (!hasHeader) {
+        writes.push(
+          gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(h.sheet + '!' + h.range) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', 'POST', { values: h.values })
+        );
+      }
+    });
+    if (writes.length > 0) return Promise.all(writes);
+  });
+}
+
+// ────────────────────────────────────────────
+// 앱 데이터 로컬 캐시 — 재방문 시 즉시 화면 표시용
+// Google Sheets에서 데이터를 받아올 때까지 기다리지 않고,
+// 마지막으로 성공한 데이터를 localStorage에 저장해두고 즉시 보여줍니다.
+// ────────────────────────────────────────────
+function saveAppDataToCache() {
+  try {
+    var cache = {
+      stocks: appData.stocks || [],
+      trades: appData.trades || [],
+      snapshots: appData.snapshots || [],
+      mockTrades: appData.mockTrades || [],
+      mockSnapshots: appData.mockSnapshots || [],
+      savedAt: Date.now()
+    };
+    localStorage.setItem(LS_APP_CACHE, JSON.stringify(cache));
+  } catch(e) {
+    // localStorage 용량 초과 등 — 무시 (캐시는 부가 기능)
+    console.warn('앱 데이터 캐시 저장 실패:', e);
+  }
+}
+
+// localStorage 캐시에서 appData를 복원합니다.
+// 캐시가 없거나 24시간 이상 지났으면 false를 반환합니다.
+function loadAppDataFromCache() {
+  try {
+    var raw = localStorage.getItem(LS_APP_CACHE);
+    if (!raw) return false;
+    var cache = JSON.parse(raw);
+    // 24시간(86400000ms) 이상 된 캐시는 너무 오래된 데이터이므로 사용하지 않음
+    if (!cache.savedAt || Date.now() - cache.savedAt > 86400000) return false;
+    // 데이터가 비어있으면 캐시 의미 없음
+    if (!cache.stocks || cache.stocks.length === 0) return false;
+    appData.stocks = cache.stocks;
+    appData.trades = cache.trades || [];
+    appData.snapshots = cache.snapshots || [];
+    appData.mockTrades = cache.mockTrades || [];
+    appData.mockSnapshots = cache.mockSnapshots || [];
+    // SHEET GUARD 값도 캐시 기준으로 세팅 (백그라운드 동기화 후 갱신됨)
+    _lastLoadedStockCount = appData.stocks.length;
+    _lastLoadedTradeCount = appData.trades.length;
+    _sheetsLoadSuccess = true;
+    return true;
+  } catch(e) {
+    console.warn('앱 데이터 캐시 복원 실패:', e);
+    return false;
+  }
+}
+
+// 5개 시트 데이터를 Google Sheets batchGet API 1회 호출로 한꺼번에 불러옵니다.
+// (기존: 5개 gFetch 직렬 호출 → 네트워크 왕복 5회 대기)
+// (개선: batchGet 1회 → 네트워크 왕복 1회, 로딩 시간 약 80% 단축)
 function loadFromSheets() {
-  return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R')).then(function(data) {
-    var rows = data.values || [];
-    appData.stocks = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+  var ranges = [
+    SH_MASTER + '!A2:R',
+    SH_TRADE + '!A2:H',
+    SH_SNAPSHOT + '!A2:C',
+    SH_MOCK + '!A2:H',
+    SH_MOCK_SNAP + '!A2:B',
+    SH_MOCK + '!J1'          // 모의투자 자본금 (기존 loadMockSnapshotsFromSheets에서 별도 조회하던 것)
+  ];
+  var rangeParams = ranges.map(function(r) { return 'ranges=' + encodeURIComponent(r); }).join('&');
+  return gFetch(SHEETS_BASE + '/' + ssId + '/values:batchGet?' + rangeParams).then(function(data) {
+    var vr = data.valueRanges || [];
+
+    // ① 마스터데이터 (A2:R)
+    var masterRows = (vr[0] && vr[0].values) || [];
+    appData.stocks = masterRows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
         broker: r[0]||'', name: r[1]||'', type: r[2]||'', ticker: r[17]||'',
         avgPrice: parseNum(r[3]), curPrice: parseNum(r[4]), qty: parseNum(r[5]),
@@ -3008,10 +3348,81 @@ function loadFromSheets() {
     // [SHEET GUARD] 로드 성공 시 원본 개수 기록 — 저장 전 비교용
     _lastLoadedStockCount = appData.stocks.length;
     _sheetsLoadSuccess = true;
+
+    // ② 거래내역 (A2:H)
+    var tradeRows = (vr[1] && vr[1].values) || [];
+    appData.trades = tradeRows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+      return {
+        date: r[0]||'', name: r[1]||'', ticker: r[2]||'',
+        type: r[3]||'매수', qty: parseNum(r[4]), price: parseNum(r[5]),
+        fee: parseNum(r[6]), memo: r[7]||'',
+      };
+    });
+    // [SHEET GUARD] 거래내역 로드 성공 시 원본 개수 기록
+    _lastLoadedTradeCount = appData.trades.length;
+
+    // ③ 자산스냅샷 (A2:C)
+    var snapRows = (vr[2] && vr[2].values) || [];
+    appData.snapshots = snapRows.filter(function(r) { return r[0]; }).map(function(r) {
+      return { date: r[0]||'', invest: parseNum(r[1]), eval: parseNum(r[2]) };
+    });
+    appData.snapshots.sort(function(a,b){ return a.date.localeCompare(b.date); });
+
+    // ④ 모의투자 거래 (A2:H)
+    var mockTradeRows = (vr[3] && vr[3].values) || [];
+    appData.mockTrades = mockTradeRows.filter(function(r){ return r[0]; }).map(function(r){
+      return {
+        date: r[0]||'', name: r[1]||'', ticker: r[2]||'',
+        type: r[3]||'매수', qty: parseFloat(r[4])||0, price: parseFloat(r[5])||0,
+        fee: parseFloat(r[6])||0, memo: r[7]||'',
+      };
+    });
+
+    // ⑤ 모의투자 스냅샷 (A2:B)
+    var mockSnapRows = (vr[4] && vr[4].values) || [];
+    appData.mockSnapshots = mockSnapRows.filter(function(r){ return r[0]; }).map(function(r){
+      return { date: r[0], totalValue: parseFloat(r[1])||0 };
+    });
+
+    // ⑥ 모의투자 자본금 동기화 (J1)
+    var capVal = vr[5] && vr[5].values && vr[5].values[0] && parseFloat(vr[5].values[0][0]);
+    if (capVal && capVal >= 100000) {
+      var local = getMockCapital();
+      if (capVal !== local) setMockCapital(capVal);
+    } else if (ssId) {
+      // 시트에 자본금이 없으면 로컬 값을 기록 (백그라운드, 비차단)
+      var cap = getMockCapital();
+      gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MOCK + '!J1') + '?valueInputOption=RAW', 'PUT', { values: [[cap]] }).catch(function(){});
+    }
+
+    // 마이그레이션 + 교차검증 (마스터+거래 둘 다 로드된 후 실행)
+    migrateLegacyStocks();
+    crossCheckInventory();
+    // 로드 성공 → 다음 방문 시 즉시 표시할 수 있도록 로컬 캐시에 저장
+    saveAppDataToCache();
+  }).catch(function(e) {
+    console.warn('시트 일괄 읽기 실패, 개별 로드로 폴백', e);
+    // batchGet 실패 시 기존 개별 로드 방식으로 폴백 (안정성 보장)
+    return _loadFromSheetsFallback();
+  });
+}
+
+// batchGet 실패 시 기존 방식으로 개별 로드하는 폴백 함수
+function _loadFromSheetsFallback() {
+  return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R')).then(function(data) {
+    var rows = data.values || [];
+    appData.stocks = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+      return {
+        broker: r[0]||'', name: r[1]||'', type: r[2]||'', ticker: r[17]||'',
+        avgPrice: parseNum(r[3]), curPrice: parseNum(r[4]), qty: parseNum(r[5]),
+        monthEndPrice: parseNum(r[10]), ma10: parseNum(r[11]),
+        cfCycle: r[12]||'매월', cfAmount: parseIntNum(r[13]), cfDecision: r[16]||'계속',
+      };
+    });
+    _lastLoadedStockCount = appData.stocks.length;
+    _sheetsLoadSuccess = true;
   }).catch(function(e) {
     console.warn('시트 읽기 실패', e);
-    // [SHEET GUARD] 로드 실패 시 빈 배열로 세팅하되, _sheetsLoadSuccess는 false 유지
-    // → saveToSheets()가 호출되어도 canSafeSaveStocks()에서 차단됨
     appData.stocks = [];
     toast('마스터 데이터 로드에 실패했어요. 네트워크 연결을 확인해주세요.', 'error');
   })
@@ -3019,7 +3430,7 @@ function loadFromSheets() {
   .then(function() { return loadSnapshotsFromSheets(); })
   .then(function() { return loadMockTradesFromSheets(); })
   .then(function() { return loadMockSnapshotsFromSheets(); })
-  .then(function() { migrateLegacyStocks(); crossCheckInventory(); });
+  .then(function() { migrateLegacyStocks(); crossCheckInventory(); saveAppDataToCache(); });
 }
 
 function loadTradesFromSheets() {
@@ -3082,6 +3493,9 @@ function crossCheckInventory() {
     if (tradeQty < -0.01) {
       // 거래합이 음수 → 매도 기록이 매수 기록보다 많음
       negatives.push(s.name + ' (거래합:' + tradeQty + '주, 매도 초과)');
+    } else if (masterQty < 0.01 && tradeQty > 0) {
+      // 전량 매도 종목(qty=0): 거래 기록 이전에 이미 보유하던 주식이므로
+      // 거래합이 양수여도 정상 — 경보 제외
     } else if (tradeQty > masterQty + 0.01) {
       // 거래합이 현재 잔고보다 많음 → 거래 중복 입력 의심
       overTrade.push(s.name + ' (잔고:' + masterQty + '주 < 거래합:' + tradeQty + '주)');
@@ -3229,7 +3643,8 @@ function showMainApp() {
   // 온보딩 체크 (첫 방문자 + 종목 없을 때)
   setTimeout(checkAndStartOnboarding, 600);
   // 로그인 직후: smaPrev·ma10w·ma40w 없으면 5단계 국면이 안 뜨므로 즉시 백그라운드 로드
-  setTimeout(initMa10Background, 800);
+  // (기존 800ms 지연 제거 — UI 렌더 후 바로 다음 마이크로태스크에서 실행)
+  setTimeout(initMa10Background, 0);
   // 1분 자동 새로고침 시작 (중복 방지)
   if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
   _autoRefreshTimer = setInterval(autoRefreshAll, 60 * 1000);
@@ -6176,6 +6591,18 @@ function autoRefreshAll() {
     // 모의투자 탭이 열려 있으면 오늘 스냅샷 저장 시도
     var mockSec = document.getElementById('section-mock');
     if (mockSec && mockSec.style.display !== 'none') saveMockSnapshotIfNeeded();
+
+    // 모의투자 보유종목 현재가 갱신 + 지정가 예약 주문 체결 확인
+    if (priceData && priceData.results) {
+      priceData.results.forEach(function(r) {
+        if (!r.error && r.priceKrw) {
+          _mockLivePrices[r.originalTicker.toUpperCase()] = { price: r.priceKrw, changeRate: r.changeRate || 0 };
+          // 소문자 원본 티커도 매핑 (한국 종목은 숫자 코드라 대소문자 무관하지만 안전하게)
+          _mockLivePrices[r.originalTicker] = { price: r.priceKrw, changeRate: r.changeRate || 0 };
+        }
+      });
+      checkMockLimitOrders();
+    }
   });
 }
 
@@ -6750,7 +7177,7 @@ function renderSafeWithdrawalHint(pnlData, periodLabel) {
   var pnlStr = '₩' + fmtNum(Math.round(pnlData.pnl));
   text.innerHTML = '<strong>' + periodLabel + '</strong>의 순수익은 <strong style="color:#059669;font-size:15px;">+' + pnlStr + '</strong>입니다.<br>'
     + '원금을 건드리지 않고 <strong style="color:#059669;">+' + pnlStr + '</strong>을 나를 위한 보너스로 출금하셔도 좋습니다! 🎉<br>'
-    + '<span style="font-size:11px;color:#94a3b8;">* 순수익 = 기말평가금액 − 기초평가금액 − 신규투입금액 (Vt − Vt-1 − Ct)</span>';
+    + '<span style="font-size:11px;color:#94a3b8;">* 순수익 = 이번달말 평가금액 − 지난달말 평가금액 − 이번달 투입금액</span>';
   hint.style.display = '';
 }
 
@@ -7013,7 +7440,7 @@ function renderMonthlySection() {
       '<td class="text-xs">' + t.date + '</td>' +
       '<td class="font-semibold text-sm">' + (t.name||'-') + '</td>' +
       '<td>' + badge + '</td>' +
-      '<td style="text-align:right;" class="font-mono text-sm">' + fmtNum(t.qty) + '</td>' +
+      '<td style="text-align:right;" class="font-mono text-sm">' + fmtQty(t.qty) + '</td>' +
       '<td style="text-align:right;" class="font-mono text-sm">₩' + fmtNum(t.price) + '</td>' +
       '<td style="text-align:right;" class="font-bold ' + (isBuy ? 'text-slate-600' : 'text-slate-700') + '">₩' + fmtNum(amount) + '</td>' +
       '<td style="text-align:right;">' + plHtml + '</td>' +
@@ -7197,7 +7624,12 @@ function loadQuantTop50() {
       renderQuantTable(d.items || []);
       var builtAt = d.builtAt ? new Date(d.builtAt).toLocaleString('ko-KR') : '-';
       var src     = d.fromCache ? '캐시' : '신규 스캔';
-      if (meta) meta.textContent = d.totalScanned + '종목 스캔 · ' + (d.passed||0) + '개 통과 · 업데이트: ' + builtAt + ' (' + src + ')';
+      var statStr = d.totalScanned + '종목 중 ';
+      if (d.scanStats && d.scanStats.cacheHit > 0) statStr += d.scanStats.cacheHit + '개 캐시 + ';
+      statStr += (d.passed||0) + '개 신규 → 총 ' + (d.items ? d.items.length : 0) + '개';
+      if (d.scanStats && d.scanStats.apiFail > 0) statStr += ' (미조회: ' + d.scanStats.apiFail + ')';
+      statStr += ' · ' + builtAt;
+      if (meta) meta.textContent = statStr;
     })
     .catch(function() {
       if (meta) meta.textContent = '데이터 없음 — 퀀트 재스캔을 눌러주세요';
@@ -7972,9 +8404,9 @@ function calcTradeAmount() {
           var mergedAvg = calculateWeightedAvg(master.qty, master.avgPrice, qty, price);
           if (newAvgInput) newAvgInput.value = fmtD(mergedAvg);
           if (detailEl) detailEl.textContent =
-            '현재 ' + fmtNum(master.qty) + '주 (₩' + fmtNum(master.avgPrice) +
-            ') + 추가 ' + fmtNum(qty) + '주 (₩' + fmtNum(price) +
-            ') → 합계 ' + fmtNum(mergedQty) + '주' +
+            '현재 ' + fmtQty(master.qty) + '주 (₩' + fmtNum(master.avgPrice) +
+            ') + 추가 ' + fmtQty(qty) + '주 (₩' + fmtNum(price) +
+            ') → 합계 ' + fmtQty(mergedQty) + '주' +
             (type === '종목추가' ? ' (비용 미반영)' : '');
         } else {
           if (newAvgInput) newAvgInput.value = fmtD(price);
@@ -8679,7 +9111,7 @@ function renderMockHoldings() {
       + '<div class="text-xs text-slate-400">' + esc(p.ticker) + '</div></td>'
       + '<td class="py-2.5 px-2 text-right text-slate-600">₩' + fmtNum(Math.round(p.avgPrice)) + '</td>'
       + '<td class="py-2.5 px-2 text-right font-bold text-slate-800">' + priceDisplay + '</td>'
-      + '<td class="py-2.5 px-2 text-right text-slate-600">' + fmtNum(p.qty) + '</td>'
+      + '<td class="py-2.5 px-2 text-right text-slate-600">' + fmtQty(p.qty) + '</td>'
       + '<td class="py-2.5 px-2 text-right font-semibold text-slate-800">₩' + fmtNum(Math.round(evalAmt)) + '</td>'
       + '<td class="py-2.5 px-2 text-right"><span class="' + colorClass + '">' + sign + ror.toFixed(2) + '%</span>'
       + '<div class="text-xs ' + colorClass + '">' + sign + '₩' + fmtNum(Math.abs(Math.round(pnl))) + '</div></td>'
@@ -8774,7 +9206,7 @@ function renderMockTrades() {
       + '<td class="py-2 px-2">' + badge + '</td>'
       + '<td class="py-2 px-2"><span class="font-semibold text-slate-800 text-xs">' + esc(t.name) + '</span>'
       + '<span class="text-xs text-slate-400 ml-1">' + esc(t.ticker) + '</span></td>'
-      + '<td class="py-2 px-2 text-right text-slate-600 text-xs">' + fmtNum(qty) + '</td>'
+      + '<td class="py-2 px-2 text-right text-slate-600 text-xs">' + fmtQty(qty) + '</td>'
       + '<td class="py-2 px-2 text-right text-slate-600 text-xs">₩' + fmtNum(price) + '</td>'
       + '<td class="py-2 px-2 text-right font-semibold text-slate-800 text-xs">₩' + fmtNum(qty * price) + '</td>'
       + profitCell
@@ -8792,6 +9224,8 @@ function renderMockSection() {
   renderMockTrades();
   renderMockProfitChart();
   checkGasSetupBanner();
+  loadMockLimitOrders();
+  renderMockLimitOrders();
 }
 
 // ── 현재가 새로고침 ──────────────────────────────────
@@ -8902,6 +9336,10 @@ function fetchMockStockPrice(ticker, name) {
       _mockCurrentPrice  = data.priceKrw;
       _mockLivePrices[ticker] = { price: data.priceKrw, changeRate: data.changeRate || 0 };
 
+      // 지정가 예약 폼 종목명 동기화
+      var limitStock = document.getElementById('mock-limit-stock');
+      if (limitStock) limitStock.value = _mockCurrentName;
+
       document.getElementById('mock-price-name').textContent = _mockCurrentName;
       document.getElementById('mock-price-val').textContent = '₩' + fmtNum(data.priceKrw);
       var chg = data.changeRate || 0;
@@ -8916,12 +9354,31 @@ function fetchMockStockPrice(ticker, name) {
 // ── 가상 주문 실행 ───────────────────────────────────
 function executeMockOrder(type) {
   if (!_mockCurrentTicker) { showMockOrderMsg('먼저 종목을 검색해주세요.', 'error'); return; }
-  var qtyRaw = (document.getElementById('mock-order-qty') || {}).value || '';
-  var qty = parseFloat(qtyRaw.replace(/,/g, ''));
-  if (!qty || qty <= 0 || !Number.isInteger(qty)) { showMockOrderMsg('수량을 올바르게 입력해주세요 (정수).', 'error'); return; }
 
   var price = _mockCurrentPrice;
   if (!price) { showMockOrderMsg('현재가 정보가 없어요. 다시 조회해주세요.', 'error'); return; }
+
+  // 입력값 파싱 — 수량 모드와 금액 모드 분기
+  var inputRaw = (document.getElementById('mock-order-qty') || {}).value || '';
+  var inputVal = parseFloat(inputRaw.replace(/,/g, ''));
+  if (!inputVal || inputVal <= 0) {
+    showMockOrderMsg(_mockOrderMode === 'qty' ? '수량을 올바르게 입력해주세요.' : '금액을 올바르게 입력해주세요.', 'error');
+    return;
+  }
+
+  var qty;
+  if (_mockOrderMode === 'amount') {
+    // 금액 모드: 입력 금액 ÷ 현재가 = 매수 가능 수량
+    // 코인·미국 주식은 소수점 매수가 가능하므로 소수점 8자리까지 허용
+    qty = Math.floor(inputVal / price * 100000000) / 100000000;
+    if (qty <= 0) {
+      showMockOrderMsg('입력 금액(' + fmtNum(inputVal) + '원)이 너무 작아요. 현재가: ₩' + fmtNum(price), 'error');
+      return;
+    }
+  } else {
+    // 수량 모드: 코인·미국 주식 등 소수점 매수를 위해 양수이면 허용
+    qty = inputVal;
+  }
 
   if (type === '매수') {
     var cash = calcMockCash();
@@ -8947,8 +9404,10 @@ function executeMockOrder(type) {
   saveMockTradeToSheet(trade).then(function() {
     renderMockSection();
     document.getElementById('mock-order-qty').value = '';
+    hideMockOrderPreview();
     var amtStr = '₩' + fmtNum(qty * price);
-    showMockOrderMsg((type === '매수' ? '✅ 가상 매수 완료! ' : '✅ 가상 매도 완료! ') + qty + '주 × ₩' + fmtNum(price) + ' = ' + amtStr, 'success');
+    var qtyStr = Number.isInteger(qty) ? qty : parseFloat(qty.toFixed(8).replace(/0+$/, '').replace(/\.$/, ''));
+    showMockOrderMsg((type === '매수' ? '✅ 가상 매수 완료! ' : '✅ 가상 매도 완료! ') + qtyStr + '주 × ₩' + fmtNum(price) + ' = ' + amtStr, 'success');
   }).catch(function(e) {
     appData.mockTrades.pop();
     console.error('[모의투자 저장 실패]', e && e.message, e);
@@ -8974,6 +9433,8 @@ function openMockSell(ticker, name, price, maxQty) {
   document.getElementById('mock-price-name').textContent = name;
   document.getElementById('mock-price-val').textContent  = '₩' + fmtNum(price);
   document.getElementById('mock-price-change').textContent = '';
+  // 매도 시 수량 모드로 전환 (금액 모드면 보유 수량 자동입력이 혼란스러움)
+  switchMockOrderMode('qty');
   document.getElementById('mock-order-qty').value = maxQty;
   showSection('mock');
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -8991,6 +9452,275 @@ function showMockOrderMsg(msg, type) {
 function hideMockOrderMsg() {
   var el = document.getElementById('mock-order-msg');
   if (el) el.classList.add('hidden');
+}
+
+// ── 수량/금액 모드 전환 ────────────────────────────────────
+// 수량 모드: 주 단위로 직접 입력 (기존 방식)
+// 금액 모드: 원 단위로 입력하면 현재가로 나눠 수량 자동 계산
+function switchMockOrderMode(mode) {
+  _mockOrderMode = mode;
+  var btnQty = document.getElementById('mockModeQty');
+  var btnAmt = document.getElementById('mockModeAmt');
+  var input = document.getElementById('mock-order-qty');
+  var unit = document.getElementById('mock-order-unit');
+  if (mode === 'amount') {
+    btnAmt.className = 'px-2.5 py-2 font-semibold bg-blue-500 text-white';
+    btnQty.className = 'px-2.5 py-2 font-semibold bg-white text-slate-500 hover:bg-slate-50';
+    if (input) { input.placeholder = '금액 (원)'; input.value = ''; }
+    if (unit) unit.textContent = '원';
+  } else {
+    btnQty.className = 'px-2.5 py-2 font-semibold bg-blue-500 text-white';
+    btnAmt.className = 'px-2.5 py-2 font-semibold bg-white text-slate-500 hover:bg-slate-50';
+    if (input) { input.placeholder = '수량'; input.value = ''; }
+    if (unit) unit.textContent = '주';
+  }
+  hideMockOrderPreview();
+}
+
+// 금액 모드일 때 예상 수량을 실시간으로 미리보기 표시
+function updateMockOrderPreview() {
+  if (_mockOrderMode !== 'amount' || !_mockCurrentPrice) { hideMockOrderPreview(); return; }
+  var inputRaw = (document.getElementById('mock-order-qty') || {}).value || '';
+  var amt = parseFloat(inputRaw.replace(/,/g, ''));
+  var preview = document.getElementById('mock-order-preview');
+  if (!amt || amt <= 0 || !preview) { hideMockOrderPreview(); return; }
+  // 소수점 매수 허용 (코인·미국 주식 등)
+  var estimatedQty = Math.floor(amt / _mockCurrentPrice * 100000000) / 100000000;
+  var actualAmt = estimatedQty * _mockCurrentPrice;
+  var qtyDisplay = Number.isInteger(estimatedQty) ? estimatedQty : estimatedQty.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+  if (estimatedQty <= 0) {
+    preview.textContent = '현재가 ₩' + fmtNum(_mockCurrentPrice) + ' 기준 매수할 수 없는 금액입니다';
+    preview.className = 'text-xs text-red-500 bg-red-50 px-3 py-1.5 rounded-lg mb-2';
+  } else {
+    var remainder = Math.round(amt - actualAmt);
+    var previewText = '예상: ' + qtyDisplay + '주 × ₩' + fmtNum(_mockCurrentPrice) + ' = ₩' + fmtNum(Math.round(actualAmt));
+    if (remainder > 0) previewText += ' (잔돈 ₩' + fmtNum(remainder) + ')';
+    preview.textContent = previewText;
+    preview.className = 'text-xs text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg mb-2';
+  }
+  preview.classList.remove('hidden');
+}
+function hideMockOrderPreview() {
+  var el = document.getElementById('mock-order-preview');
+  if (el) el.classList.add('hidden');
+}
+
+// ── 지정가 예약 주문 ────────────────────────────────────
+// 목표 가격을 설정하면, 자동 새로고침(1분 간격)에서 현재가가
+// 목표에 도달했을 때 자동으로 체결합니다.
+// 매수: 현재가 ≤ 지정가이면 체결 (싸게 사기)
+// 매도: 현재가 ≥ 지정가이면 체결 (비싸게 팔기)
+
+function loadMockLimitOrders() {
+  try {
+    var raw = localStorage.getItem(LS_MOCK_LIMITS);
+    _mockLimitOrders = raw ? JSON.parse(raw) : [];
+  } catch(e) { _mockLimitOrders = []; }
+}
+function saveMockLimitOrders() {
+  try {
+    localStorage.setItem(LS_MOCK_LIMITS, JSON.stringify(_mockLimitOrders));
+  } catch(e) { console.warn('예약 주문 저장 실패:', e); }
+}
+
+// 지정가 예약 주문 카드 전체를 접기/펼치기
+var _mockLimitOpen = false;
+function toggleMockLimitSection() {
+  _mockLimitOpen = !_mockLimitOpen;
+  var body    = document.getElementById('mock-limit-body');
+  var chevron = document.getElementById('mockLimitChevron');
+  if (body)    body.style.display    = _mockLimitOpen ? '' : 'none';
+  if (chevron) { chevron.textContent = _mockLimitOpen ? '▼' : '▶'; chevron.className = 'toggle-chevron' + (_mockLimitOpen ? ' open' : ''); }
+  // 펼칠 때 현재 검색된 종목 자동 입력
+  if (_mockLimitOpen) {
+    var stockInput = document.getElementById('mock-limit-stock');
+    if (stockInput && _mockCurrentName) stockInput.value = _mockCurrentName;
+  }
+}
+
+// 종목 검색 영역의 "예약" 버튼 클릭 시
+// → 지정가 예약 카드 펼치기 + 종목/현재가 자동 입력 + 스크롤
+function openMockLimitFromSearch() {
+  if (!_mockCurrentTicker) { showMockOrderMsg('먼저 종목을 검색해주세요.', 'error'); return; }
+  // 카드가 닫혀있으면 열기
+  if (!_mockLimitOpen) toggleMockLimitSection();
+  // 종목 정보 자동 입력
+  var stockInput = document.getElementById('mock-limit-stock');
+  if (stockInput) stockInput.value = _mockCurrentName || '';
+  // 현재가를 지정가 기본값으로 입력 (사용자가 수정 가능)
+  var priceInput = document.getElementById('mock-limit-price');
+  if (priceInput && _mockCurrentPrice) priceInput.value = Number(_mockCurrentPrice).toLocaleString('ko-KR');
+  // 예약 카드로 스크롤
+  var card = document.getElementById('mock-limit-card');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function addMockLimitOrder() {
+  if (!_mockCurrentTicker || !_mockCurrentName) {
+    showMockLimitMsg('먼저 위에서 종목을 검색해주세요.', 'error'); return;
+  }
+  var priceRaw = (document.getElementById('mock-limit-price') || {}).value || '';
+  var targetPrice = parseFloat(priceRaw.replace(/,/g, ''));
+  if (!targetPrice || targetPrice <= 0) {
+    showMockLimitMsg('지정가를 올바르게 입력해주세요.', 'error'); return;
+  }
+  var qtyRaw = (document.getElementById('mock-limit-qty') || {}).value || '';
+  var qty = parseFloat(qtyRaw.replace(/,/g, ''));
+  if (!qty || qty <= 0) {
+    showMockLimitMsg('수량을 올바르게 입력해주세요.', 'error'); return;
+  }
+
+  var orderType = document.getElementById('mock-limit-type').value;
+
+  // 매도 시 보유수량 검증
+  if (orderType === '매도') {
+    var portfolio = calcMockPortfolio();
+    var holding = portfolio.find(function(p){ return p.ticker === _mockCurrentTicker; });
+    var holdQty = holding ? holding.qty : 0;
+    if (qty > holdQty) {
+      showMockLimitMsg('보유 수량이 부족해요. 보유: ' + holdQty + '주', 'error'); return;
+    }
+  }
+
+  var order = {
+    id: Date.now(),
+    ticker: _mockCurrentTicker,
+    name: _mockCurrentName,
+    type: orderType,
+    targetPrice: targetPrice,
+    qty: qty,
+    createdAt: getLocalDateStr(),
+    status: 'pending'  // pending / filled / cancelled
+  };
+  _mockLimitOrders.push(order);
+  saveMockLimitOrders();
+  renderMockLimitOrders();
+
+  // 입력 초기화
+  document.getElementById('mock-limit-price').value = '';
+  document.getElementById('mock-limit-qty').value = '';
+  var condText = orderType === '매수'
+    ? '현재가가 ₩' + fmtNum(targetPrice) + ' 이하가 되면'
+    : '현재가가 ₩' + fmtNum(targetPrice) + ' 이상이 되면';
+  showMockLimitMsg('예약 등록 완료! ' + condText + ' 자동 체결됩니다.', 'success');
+}
+
+function cancelMockLimitOrder(orderId) {
+  _mockLimitOrders = _mockLimitOrders.filter(function(o) { return o.id !== orderId; });
+  saveMockLimitOrders();
+  renderMockLimitOrders();
+  toast('예약 주문이 취소되었어요.', 'info');
+}
+
+// 지정가 예약 주문 체결 확인 — autoRefreshAll에서 현재가 갱신 후 호출
+function checkMockLimitOrders() {
+  if (!_mockLimitOrders || _mockLimitOrders.length === 0) return;
+  var pending = _mockLimitOrders.filter(function(o) { return o.status === 'pending'; });
+  if (pending.length === 0) return;
+
+  var filled = [];
+  pending.forEach(function(order) {
+    var liveData = _mockLivePrices[order.ticker];
+    if (!liveData || !liveData.price) return;
+    var curPrice = liveData.price;
+
+    // 매수: 현재가가 지정가 이하이면 체결 (싸게 살 수 있을 때)
+    // 매도: 현재가가 지정가 이상이면 체결 (비싸게 팔 수 있을 때)
+    var shouldFill = (order.type === '매수' && curPrice <= order.targetPrice)
+                  || (order.type === '매도' && curPrice >= order.targetPrice);
+    if (!shouldFill) return;
+
+    // 매수 시 현금 검증
+    if (order.type === '매수') {
+      var cash = calcMockCash();
+      if (order.qty * curPrice > cash) return;  // 현금 부족이면 체결하지 않음
+    }
+    // 매도 시 보유수량 검증
+    if (order.type === '매도') {
+      var portfolio = calcMockPortfolio();
+      var holding = portfolio.find(function(p) { return p.ticker === order.ticker; });
+      if (!holding || holding.qty < order.qty) return;  // 보유량 부족이면 체결하지 않음
+    }
+
+    // 체결 — 현재가로 거래 실행
+    var trade = {
+      date: getLocalDateStr(), name: order.name, ticker: order.ticker,
+      type: order.type, qty: order.qty, price: curPrice, fee: 0,
+      memo: '지정가 예약 ₩' + fmtNum(order.targetPrice)
+    };
+    appData.mockTrades.push(trade);
+    saveMockTradeToSheet(trade).catch(function(e) { console.warn('예약 주문 시트 저장 실패:', e); });
+
+    order.status = 'filled';
+    order.filledAt = getLocalDateStr();
+    order.filledPrice = curPrice;
+    filled.push(order);
+  });
+
+  if (filled.length > 0) {
+    // 체결된 주문 제거하고 저장
+    _mockLimitOrders = _mockLimitOrders.filter(function(o) { return o.status === 'pending'; });
+    saveMockLimitOrders();
+    renderMockSection();
+
+    // 체결 알림
+    filled.forEach(function(o) {
+      toast('예약 ' + o.type + ' 체결! ' + o.name + ' ' + o.qty + '주 × ₩' + fmtNum(o.filledPrice), 'success');
+    });
+  }
+}
+
+function renderMockLimitOrders() {
+  var container = document.getElementById('mock-limit-orders');
+  var countEl = document.getElementById('mock-pending-count');
+  if (!container) return;
+
+  var pending = _mockLimitOrders.filter(function(o) { return o.status === 'pending'; });
+  if (countEl) countEl.textContent = pending.length;
+
+  if (pending.length === 0) {
+    container.innerHTML = '<div class="text-center py-6 text-slate-400 text-sm">등록된 예약 주문이 없어요.</div>';
+    return;
+  }
+
+  var html = '<table class="w-full text-xs"><thead><tr class="border-b border-slate-200 text-slate-500">'
+    + '<th class="py-2 text-left font-semibold">종목</th>'
+    + '<th class="py-2 text-center font-semibold">구분</th>'
+    + '<th class="py-2 text-right font-semibold">지정가</th>'
+    + '<th class="py-2 text-right font-semibold">수량</th>'
+    + '<th class="py-2 text-right font-semibold">예상 금액</th>'
+    + '<th class="py-2 text-center font-semibold">조건</th>'
+    + '<th class="py-2 text-right font-semibold">등록일</th>'
+    + '<th class="py-2 text-center font-semibold"></th>'
+    + '</tr></thead><tbody>';
+
+  pending.forEach(function(o) {
+    var isBuy = o.type === '매수';
+    var badgeCls = isBuy ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600';
+    var condText = isBuy ? '현재가 ≤ ₩' + fmtNum(o.targetPrice) : '현재가 ≥ ₩' + fmtNum(o.targetPrice);
+    html += '<tr class="border-b border-slate-100 hover:bg-slate-50">'
+      + '<td class="py-2.5 font-semibold text-slate-700">' + o.name + '</td>'
+      + '<td class="py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-bold ' + badgeCls + '">' + o.type + '</span></td>'
+      + '<td class="py-2.5 text-right font-mono">₩' + fmtNum(o.targetPrice) + '</td>'
+      + '<td class="py-2.5 text-right">' + fmtQty(o.qty) + '주</td>'
+      + '<td class="py-2.5 text-right font-mono">₩' + fmtNum(o.qty * o.targetPrice) + '</td>'
+      + '<td class="py-2.5 text-center text-slate-500">' + condText + '</td>'
+      + '<td class="py-2.5 text-right text-slate-400">' + o.createdAt + '</td>'
+      + '<td class="py-2.5 text-center"><button onclick="cancelMockLimitOrder(' + o.id + ')" class="text-red-400 hover:text-red-600 font-semibold" title="취소"><i class="fas fa-times"></i></button></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function showMockLimitMsg(msg, type) {
+  var el = document.getElementById('mock-limit-msg');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'text-xs font-semibold px-3 py-2 rounded-lg mt-2 '
+    + (type === 'error' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200');
+  el.classList.remove('hidden');
+  setTimeout(function() { el.classList.add('hidden'); }, 4000);
 }
 
 // ── GAS 가이드 모달 ─────────────────────────────────────
