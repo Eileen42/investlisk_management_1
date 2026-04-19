@@ -291,7 +291,9 @@ export interface KisVolumeRankItem {
   ticker: string
   price: number
   changeRate: number
-  tradeAmount: number   // 거래대금 (원)
+  tradeAmount: number    // 당일 누적 거래대금 (원)
+  prevTradeAmount: number // 전일 거래대금 (원) — 거래대금 증가율 계산용
+  marketCap: number      // 시가총액 (원) = 현재가 × 상장주수
 }
 
 export async function fetchKisVolumeRank(
@@ -302,9 +304,11 @@ export async function fetchKisVolumeRank(
       data_rank: string
       hts_kor_isnm: string
       mksc_shrn_iscd: string
-      stck_prpr: string
-      prdy_ctrt: string
-      acml_tr_pbmn: string
+      stck_prpr: string       // 현재가
+      prdy_ctrt: string       // 전일 대비 등락률
+      acml_tr_pbmn: string    // 당일 누적 거래대금
+      prdy_tr_pbmn: string    // 전일 거래대금
+      lstn_stcn: string       // 상장 주수 (시총 계산용)
     }>
     rt_cd: string
   }>(
@@ -327,14 +331,20 @@ export async function fetchKisVolumeRank(
   )
   if (!res || res.rt_cd !== '0' || !Array.isArray(res.output)) return []
 
-  return res.output.slice(0, limit).map(r => ({
-    rank:        parseInt(r.data_rank, 10)    || 0,
-    name:        r.hts_kor_isnm               || '',
-    ticker:      r.mksc_shrn_iscd             || '',
-    price:       parseInt(r.stck_prpr, 10)    || 0,
-    changeRate:  parseFloat(r.prdy_ctrt)      || 0,
-    tradeAmount: parseInt(r.acml_tr_pbmn, 10) || 0,
-  }))
+  return res.output.slice(0, limit).map(r => {
+    const price = parseInt(r.stck_prpr, 10) || 0
+    const lstnStcn = parseInt(r.lstn_stcn, 10) || 0
+    return {
+      rank:            parseInt(r.data_rank, 10)      || 0,
+      name:            r.hts_kor_isnm                 || '',
+      ticker:          r.mksc_shrn_iscd               || '',
+      price,
+      changeRate:      parseFloat(r.prdy_ctrt)        || 0,
+      tradeAmount:     parseInt(r.acml_tr_pbmn, 10)   || 0,
+      prevTradeAmount: parseInt(r.prdy_tr_pbmn, 10)   || 0,
+      marketCap:       price * lstnStcn,
+    }
+  })
 }
 
 // ───────────────────────────────────────────────────

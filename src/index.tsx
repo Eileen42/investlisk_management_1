@@ -5,7 +5,8 @@ import {
   isKisConfigured, getKisToken,
   fetchKisDomesticPrice, fetchKisDomesticMonthly, fetchKisDomesticWeekly,
   fetchKisVolumeRank,
-  calcMa10FromBars, calcWeeklyMaFromBars, type KisEnv
+  calcMa10FromBars, calcWeeklyMaFromBars,
+  type KisEnv, type KisVolumeRankItem
 } from './kis_api'
 import {
   fetchUpbitPrice, fetchUpbitMonthlyCandles, fetchUpbitWeeklyCandles,
@@ -1610,8 +1611,63 @@ async function getRadarWatchlist(kv: KVNamespace): Promise<RadarWatchItem[]> {
   } catch (_) { return [] }
 }
 
+// ── 레이더 복합 스코어링 ─────────────────────────
+// KIS에서 받아온 종목들을 3가지 지표로 랭킹 매긴 뒤 가중 합산하여 재정렬합니다.
+//   A. 거래대금 순위 × 0.4  (가장 많은 돈이 몰린 순)
+//   B. 거래대금 증가율 순위 × 0.4  (전일 대비 거래대금이 가장 크게 폭증한 순)
+//   C. 시가총액 순위 × 0.2  (기업 덩치가 큰 순)
+// 종합 점수가 낮을수록 1위.
+function rankByCompositeScore(items: KisVolumeRankItem[]) {
+  if (items.length === 0) return []
+
+  // 거래대금 증가율 계산: (당일 거래대금 - 전일 거래대금) / 전일 거래대금
+  // 전일 거래대금이 0이면 증가율 0으로 처리 (장 초반 등 데이터 없는 경우)
+  const withGrowth = items.map(item => ({
+    ...item,
+    tradeGrowth: item.prevTradeAmount > 0
+      ? (item.tradeAmount - item.prevTradeAmount) / item.prevTradeAmount
+      : 0,
+  }))
+
+  // 각 지표별 내림차순 정렬 → 순위 부여 (1등=1점)
+  const rankByField = (
+    arr: typeof withGrowth,
+    field: 'tradeAmount' | 'tradeGrowth' | 'marketCap'
+  ): Map<string, number> => {
+    const sorted = [...arr].sort((a, b) => b[field] - a[field])
+    const rankMap = new Map<string, number>()
+    sorted.forEach((item, idx) => rankMap.set(item.ticker, idx + 1))
+    return rankMap
+  }
+
+  const rankA = rankByField(withGrowth, 'tradeAmount')   // 거래대금 순위
+  const rankB = rankByField(withGrowth, 'tradeGrowth')   // 거래대금 증가율 순위
+  const rankC = rankByField(withGrowth, 'marketCap')      // 시총 순위
+
+  // 가중 합산 → 낮은 점수가 1위
+  const scored = withGrowth.map(item => ({
+    ...item,
+    compositeScore:
+      (rankA.get(item.ticker) || items.length) * 0.4 +
+      (rankB.get(item.ticker) || items.length) * 0.4 +
+      (rankC.get(item.ticker) || items.length) * 0.2,
+  }))
+
+  scored.sort((a, b) => a.compositeScore - b.compositeScore)
+
+  // rank 재부여, 프론트엔드에 전달할 필드만 반환
+  return scored.map((item, idx) => ({
+    rank:        idx + 1,
+    name:        item.name,
+    ticker:      item.ticker,
+    price:       item.price,
+    changeRate:  item.changeRate,
+    tradeAmount: item.tradeAmount,
+  }))
+}
+
 // ── 레이더 유니버스 조회 ──────────────────────────
-// type=kr : KIS 거래대금 상위 100 (KIS 미설정 시 KRX_FALLBACK 반환)
+// type=kr : KIS 거래대금 상위 100 → 복합 스코어링으로 재정렬 (KIS 미설정 시 KRX_FALLBACK 반환)
 // type=us : S&P500 Top 100 정적 목록
 app.get('/api/radar/universe', async (c) => {
   const type = c.req.query('type') || 'kr'
@@ -1634,22 +1690,33 @@ app.get('/api/radar/universe', async (c) => {
     return c.json({ type: 'kr', items, count: items.length, source: 'fallback_kis_not_configured' })
   }
 
-  // KIS 거래대금 상위 50 조회
-  const kisItems = await fetchKisVolumeRank(kisEnv, 50)
+  // KIS 거래대금 상위 100 조회 → 복합 스코어링으로 재정렬
+  const kisRaw = await fetchKisVolumeRank(kisEnv, 100)
 
-  // KIS 결과를 기반으로 하되, 부족하면 KRX_FALLBACK으로 100개까지 보충
-  const kisTickerSet = new Set(kisItems.map(i => i.ticker))
+  // ── 1차 필터: 거래대금 1억 미만 OR 현재가 2,000원 미만 종목 제외 ──
+  // 잡주·페니스톡을 걸러내 의미 있는 종목만 순위에 반영합니다.
+  const filtered = kisRaw.filter(
+    item => item.tradeAmount >= 100_000_000 && item.price >= 2000
+  )
+
+  // ── 복합 스코어링: 거래대금(40%) + 거래대금 증가율(40%) + 시총(20%) ──
+  // 각 지표별 랭킹(1등=1점, N등=N점)을 매긴 후 가중치를 곱해 합산합니다.
+  // 종합 점수가 낮을수록 1위.
+  const scored = rankByCompositeScore(filtered)
+
+  // 스코어링된 종목으로 100개까지, 부족하면 KRX_FALLBACK으로 보충
+  const scoredTickers = new Set(scored.map(i => i.ticker))
   const supplementItems = KRX_FALLBACK
-    .filter(s => !kisTickerSet.has(s.ticker))
-    .slice(0, 100 - kisItems.length)
+    .filter(s => !scoredTickers.has(s.ticker))
+    .slice(0, 100 - scored.length)
     .map((s, i) => ({
-      rank: kisItems.length + i + 1,
+      rank: scored.length + i + 1,
       name: s.name, ticker: s.ticker,
       price: 0, changeRate: 0, tradeAmount: 0,
     }))
 
-  const items = [...kisItems, ...supplementItems]
-  const result = { type: 'kr', items, count: items.length, source: 'kis', updatedAt: new Date().toISOString() }
+  const items = [...scored, ...supplementItems]
+  const result = { type: 'kr', items, count: items.length, source: 'kis_composite', updatedAt: new Date().toISOString() }
   setCache(cacheKey, result)
   return c.json(result)
 })
@@ -1860,6 +1927,8 @@ interface QuantCacheData {
   builtAt:      string
   totalScanned: number
   passed:       number
+  scanStats?:   { apiFail: number; filtered: number; success: number; cacheHit: number }
+  mergedFromPrev?: number  // 이전 결과에서 병합된 종목 수
 }
 
 // A. 이격도 점수 (0-30점, 3단계 선형)
@@ -1898,10 +1967,51 @@ function scoreQuantMonthlySlope(pct: number): number {
   return Math.max(1, Math.round(pct / 0.5 * 20))     // 0→20 선형
 }
 
+// ── 종목별 MA 데이터 KV 캐시 ─────────────────────────
+// Cloudflare Workers는 매 요청마다 인메모리 캐시가 리셋될 수 있으므로,
+// 한번 성공한 종목의 MA 데이터를 KV에 저장합니다.
+// 다음 스캔에서는 KV 캐시가 있는 종목은 API 호출을 건너뛰고,
+// API 예산을 아직 데이터가 없는 종목에 집중합니다.
+// 스캔을 반복할수록 점점 더 많은 종목이 커버됩니다.
+const QUANT_MA_CACHE_KEY = 'quant_ma_cache_v2'
+const QUANT_MA_CACHE_TTL = 6 * 60 * 60  // KV TTL 6시간
+const QUANT_MA_MAX_AGE   = 6 * 60 * 60 * 1000  // 데이터 유효기간 6시간(ms)
+
+interface QuantMaCacheEntry {
+  rawClose: number
+  ma10mRaw: number; ma10mPrv: number | null
+  ma10wRaw: number; ma10wPrv: number | null
+  ma20wRaw: number
+  volumeW: number | null; volumeWAvg10: number | null
+  cachedAt: number  // Date.now() 시점
+}
+type QuantMaCache = Record<string, QuantMaCacheEntry>  // { ticker → entry }
+
+async function loadQuantMaCache(kv: KVNamespace): Promise<QuantMaCache> {
+  try {
+    const data = await kv.get(QUANT_MA_CACHE_KEY, 'json') as QuantMaCache | null
+    if (!data) return {}
+    // 6시간 지난 항목 제거
+    const now = Date.now()
+    const fresh: QuantMaCache = {}
+    for (const [k, v] of Object.entries(data)) {
+      if (now - v.cachedAt < QUANT_MA_MAX_AGE) fresh[k] = v
+    }
+    return fresh
+  } catch { return {} }
+}
+async function saveQuantMaCache(kv: KVNamespace, cache: QuantMaCache): Promise<void> {
+  try { await kv.put(QUANT_MA_CACHE_KEY, JSON.stringify(cache), { expirationTtl: QUANT_MA_CACHE_TTL }) } catch {}
+}
+
 async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   const kisEnv   = env as unknown as KisEnv
   const kisReady = isKisConfigured(kisEnv)
   const usdKrw   = await getUsdKrw()
+
+  // ── KV에서 이전 스캔의 종목별 MA 캐시 로드 (1회 읽기) ──
+  const maCache = await loadQuantMaCache(env.CUSTOM_TICKERS)
+  let _statCacheHit = 0  // KV 캐시에서 가져온 종목 수
 
   // ① 유니버스 구성: US=SP500 Top100, KR=KIS 순위 50 + KRX 폴백 50
   const usUniverse = SP500_TOP100.map(s => ({
@@ -1909,8 +2019,10 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   }))
 
   let krUniverse: Array<{ name: string; ticker: string; market: 'kr' }> = []
+  let kisRaw: KisVolumeRankItem[] | null = null  // 잡주 사전 필터용 (scanKrStocks에서 참조)
   if (kisReady) {
-    const kisItems = await fetchKisVolumeRank(kisEnv, 50)
+    kisRaw = await fetchKisVolumeRank(kisEnv, 50)
+    const kisItems = kisRaw
     const kisSet   = new Set(kisItems.map(i => i.ticker))
     krUniverse = [
       ...kisItems.map(i => ({ name: i.name, ticker: i.ticker, market: 'kr' as const })),
@@ -1945,6 +2057,10 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   ]
 
   const passed: QuantStockResult[] = []
+  // 진단용 카운터 — API 에러 vs 필터 탈락을 구분하기 위해 추적
+  let _statApiFail = 0   // API 호출 실패 (Yahoo 레이트리밋, KIS 오류 등)
+  let _statFiltered = 0  // 절대 필터 탈락 (정상 데이터지만 조건 미충족)
+  let _statSuccess = 0   // 필터 통과
 
   // ── 공통 스코어링 헬퍼 (필터 + 점수 계산) ──
   // 코인/KR/US 모든 그룹이 동일한 절대 필터 + 스코어링 로직을 사용
@@ -1964,11 +2080,11 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
     //    세력 조작에 취약하여 10이평선 추세추종 전략에 부적합
     //    코인은 단가가 낮아도 정상이므로 필터 제외 (도지코인 ~200원 등)
     const isCoin = (p.market as string) === 'coin'
-    if (!isCoin && p.isKorean && rawClose < 2000) return null  // 한국 주식: 2,000원 미만 제외
-    if (!isCoin && !p.isKorean && rawClose < 5)   return null  // 미국 주식: $5 미만 제외
-    if (rawClose <= ma10mRaw) return null   // ① P > SMA10_M
-    if (rawClose <= ma10wRaw) return null   // ② P > SMA10_W
-    if (ma10wRaw <= ma20wRaw) return null   // ③ SMA10_W > SMA20_W (정배열 초기)
+    if (!isCoin && p.isKorean && rawClose < 2000) { _statFiltered++; return null }
+    if (!isCoin && !p.isKorean && rawClose < 5)   { _statFiltered++; return null }
+    if (rawClose <= ma10mRaw) { _statFiltered++; return null }   // ① P > SMA10_M
+    if (rawClose <= ma10wRaw) { _statFiltered++; return null }   // ② P > SMA10_W
+    if (ma10wRaw <= ma20wRaw) { _statFiltered++; return null }   // ③ SMA10_W > SMA20_W (정배열 초기)
 
     // ─── 스코어링 (비율 기반 → 통화 무관, 데이터 소스와 무관하게 동작) ───
     const gapPct     = (rawClose - ma10wRaw) / ma10wRaw * 100
@@ -1986,6 +2102,7 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
     const score  = scoreA + scoreB + scoreC + scoreD
 
     const toKrw = p.isKorean ? 1 : usdKrw
+    _statSuccess++
     return {
       rank: 0, ticker: p.ticker, name: p.name,
       price:        Math.round(rawClose * toKrw),
@@ -2006,9 +2123,31 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   // 개선: 3그룹 동시 출발 → 가장 느린 그룹 기준 = ~15-20초
   // ═══════════════════════════════════════════════════
 
+  // ── 공통: KV 캐시 히트 시 API 건너뛰는 헬퍼 ──
+  // 이전 스캔에서 성공한 종목의 MA 데이터를 재활용합니다.
+  // API 예산을 아직 데이터가 없는 종목에 집중할 수 있습니다.
+  function tryScoreFromCache(ticker: string, name: string, market: 'us' | 'kr', isKorean: boolean): QuantStockResult | null {
+    const c = maCache[ticker]
+    if (!c) return null
+    _statCacheHit++
+    return scoreStock({
+      ticker, name, market, isKorean,
+      rawClose: c.rawClose, ma10mRaw: c.ma10mRaw, ma10mPrv: c.ma10mPrv,
+      ma10wRaw: c.ma10wRaw, ma10wPrv: c.ma10wPrv, ma20wRaw: c.ma20wRaw,
+      volumeW: c.volumeW, volumeWAvg10: c.volumeWAvg10,
+    })
+  }
+  // 스캔 성공 시 MA 데이터를 KV 캐시에 저장 (다음 스캔에서 재활용)
+  function saveMaToCache(ticker: string, d: Omit<QuantMaCacheEntry, 'cachedAt'>) {
+    maCache[ticker] = { ...d, cachedAt: Date.now() }
+  }
+
   // ── 그룹 A: 코인 스캔 (업비트 API, 15개 전체 병렬) ──
   async function scanCoins(): Promise<QuantStockResult[]> {
     const results = await Promise.all(COIN_UNIVERSE.map(async (coin) => {
+      // KV 캐시 히트 → API 호출 건너뜀
+      const cached = tryScoreFromCache(coin.ticker, coin.name, 'coin' as unknown as 'us' | 'kr', true)
+      if (cached) return cached
       try {
         const [monthlyBars, weeklyBars] = await Promise.all([
           fetchUpbitMonthlyCandles(coin.ticker, 13),
@@ -2022,130 +2161,162 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
         const rawClose = weekly.latestClose ?? monthly.currentMonthClose
         if (!rawClose || !monthly.ma10 || !weekly.ma10w || !weekly.ma20w) return null
 
-        return scoreStock({
-          ticker: coin.ticker, name: coin.name,
-          market: 'coin' as unknown as 'us' | 'kr',
-          isKorean: true,  // 코인은 KRW 기준이므로 환산 불필요 (toKrw=1)
+        // 성공 → KV 캐시에 저장
+        saveMaToCache(coin.ticker, {
           rawClose, ma10mRaw: monthly.ma10, ma10mPrv: monthly.smaPrev,
           ma10wRaw: weekly.ma10w, ma10wPrv: weekly.ma10wPrev, ma20wRaw: weekly.ma20w,
           volumeW: weekly.volumeW, volumeWAvg10: weekly.volumeWAvg10,
         })
-      } catch (_) { return null }
+        return scoreStock({
+          ticker: coin.ticker, name: coin.name,
+          market: 'coin' as unknown as 'us' | 'kr',
+          isKorean: true,
+          rawClose, ma10mRaw: monthly.ma10, ma10mPrv: monthly.smaPrev,
+          ma10wRaw: weekly.ma10w, ma10wPrv: weekly.ma10wPrev, ma20wRaw: weekly.ma20w,
+          volumeW: weekly.volumeW, volumeWAvg10: weekly.volumeWAvg10,
+        })
+      } catch (_) { _statApiFail++; return null }
     }))
     return results.filter((r): r is QuantStockResult => r != null)
   }
 
-  // ── 그룹 B: 한국 주식 (KIS 우선, 20개씩 병렬 — 딜레이 불필요) ──
+  // ── 그룹 B: 한국 주식 (KIS 우선, 30개씩 병렬 — 딜레이 불필요) ──
   async function scanKrStocks(): Promise<QuantStockResult[]> {
-    const KR_BATCH = 20  // KIS는 Yahoo보다 안정적이므로 배치 크기 증가
+    // KIS 거래대금 조회에서 이미 받은 현재가로 잡주(2000원 미만) 사전 필터링
+    // → 불필요한 월봉·주봉 API 호출을 아예 안 하므로 시간 대폭 절약
+    const krFiltered = krUniverse.filter(s => {
+      const kisItem = kisRaw?.find(k => k.ticker === s.ticker)
+      if (kisItem && kisItem.price > 0 && kisItem.price < 2000) return false
+      return true
+    })
     const results: QuantStockResult[] = []
-    for (let i = 0; i < krUniverse.length; i += KR_BATCH) {
-      const batch = await Promise.all(krUniverse.slice(i, i + KR_BATCH).map(async (stock) => {
-        try {
-          const { yhTicker } = inferTicker(stock.ticker)
-          let ma10mRaw: number | null = null
-          let ma10mPrv: number | null = null
-          let ma10wRaw: number | null = null
-          let ma10wPrv: number | null = null
-          let ma20wRaw: number | null = null
-          let rawClose = 0
-          let volumeW: number | null = null
-          let volumeWAvg10: number | null = null
+    // KV 캐시 히트인 종목은 API 호출 건너뜀
+    const krNeedScan: typeof krFiltered = []
+    for (const stock of krFiltered) {
+      const cached = tryScoreFromCache(stock.ticker, stock.name, 'kr', true)
+      if (cached) { results.push(cached); continue }
+      krNeedScan.push(stock)
+    }
+    // 한 종목씩 순차 처리 — KIS/Yahoo 레이트리밋 방지
+    // 20초 시간 제한 — Workers 타임아웃 방지, 나머지는 다음 스캔에서 KV 캐시로 커버
+    const krDeadline = Date.now() + 20000
+    for (let i = 0; i < krNeedScan.length; i++) {
+      if (Date.now() > krDeadline) break  // 시간 초과 → 여기까지만
+      const stock = krNeedScan[i]
+      if (i > 0) await new Promise(r => setTimeout(r, 300))
+      try {
+        const { yhTicker } = inferTicker(stock.ticker)
+        let ma10mRaw: number | null = null, ma10mPrv: number | null = null
+        let ma10wRaw: number | null = null, ma10wPrv: number | null = null
+        let ma20wRaw: number | null = null, rawClose = 0
+        let volumeW: number | null = null, volumeWAvg10: number | null = null
 
-          if (kisReady) {
-            // KIS 직접 조회 (수정주가, 실시간)
-            const [kisMBars, kisWBars] = await Promise.all([
-              fetchKisDomesticMonthly(kisEnv, stock.ticker),
-              fetchKisDomesticWeekly(kisEnv, stock.ticker),
-            ])
-            const kisM = (kisMBars.length >= 10) ? calcMa10FromBars(kisMBars) : null
-            const kisW = (kisWBars.length >= 10) ? calcWeeklyMaFromBars(kisWBars) : null
+        if (kisReady) {
+          const kisMBars = await fetchKisDomesticMonthly(kisEnv, stock.ticker)
+          await new Promise(r => setTimeout(r, 200))
+          const kisWBars = await fetchKisDomesticWeekly(kisEnv, stock.ticker)
+          const kisM = (kisMBars.length >= 10) ? calcMa10FromBars(kisMBars) : null
+          const kisW = (kisWBars.length >= 10) ? calcWeeklyMaFromBars(kisWBars) : null
 
-            if (kisM?.ma10 && kisW?.ma10w) {
-              ma10mRaw = kisM.ma10
-              if (kisMBars.length >= 11) {
-                const prev10 = kisMBars.slice(-11, -1).map(b => b.close)
-                ma10mPrv = Math.round(prev10.reduce((s, v) => s + v, 0) / 10)
-              }
-              ma10wRaw     = kisW.ma10w
-              ma10wPrv     = kisW.ma10wPrev
-              ma20wRaw     = kisW.ma20w
-              rawClose     = kisW.latestClose ?? kisM.currentClose ?? 0
-              volumeW      = kisW.volumeW
-              volumeWAvg10 = kisW.volumeWAvg10
-            } else {
-              // KIS 실패 → Yahoo 폴백
-              const [monthly, weekly] = await Promise.all([
-                fetchMa10Data(yhTicker), fetchMaWeeklyData(yhTicker),
-              ])
-              if (!monthly || !weekly) return null
-              ma10mRaw = monthly.ma10; ma10mPrv = monthly.smaPrev
-              ma10wRaw = weekly.ma10w; ma10wPrv = weekly.ma10wPrev; ma20wRaw = weekly.ma20w
-              rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
-              volumeW = weekly.volumeW ?? null; volumeWAvg10 = weekly.volumeWAvg10 ?? null
+          if (kisM?.ma10 && kisW?.ma10w) {
+            ma10mRaw = kisM.ma10
+            if (kisMBars.length >= 11) {
+              const prev10 = kisMBars.slice(-11, -1).map(b => b.close)
+              ma10mPrv = Math.round(prev10.reduce((s, v) => s + v, 0) / 10)
             }
+            ma10wRaw = kisW.ma10w; ma10wPrv = kisW.ma10wPrev; ma20wRaw = kisW.ma20w
+            rawClose = kisW.latestClose ?? kisM.currentClose ?? 0
+            volumeW = kisW.volumeW; volumeWAvg10 = kisW.volumeWAvg10
           } else {
-            // KIS 미설정 → Yahoo 사용
-            const [monthly, weekly] = await Promise.all([
-              fetchMa10Data(yhTicker), fetchMaWeeklyData(yhTicker),
-            ])
-            if (!monthly || !weekly) return null
+            // KIS 실패 → Yahoo 폴백 (순차)
+            const monthly = await fetchMa10Data(yhTicker)
+            await new Promise(r => setTimeout(r, 300))
+            const weekly = await fetchMaWeeklyData(yhTicker)
+            if (!monthly || !weekly) { _statApiFail++; continue }
             ma10mRaw = monthly.ma10; ma10mPrv = monthly.smaPrev
             ma10wRaw = weekly.ma10w; ma10wPrv = weekly.ma10wPrev; ma20wRaw = weekly.ma20w
             rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
             volumeW = weekly.volumeW ?? null; volumeWAvg10 = weekly.volumeWAvg10 ?? null
           }
+        } else {
+          const monthly = await fetchMa10Data(yhTicker)
+          await new Promise(r => setTimeout(r, 300))
+          const weekly = await fetchMaWeeklyData(yhTicker)
+          if (!monthly || !weekly) { _statApiFail++; continue }
+          ma10mRaw = monthly.ma10; ma10mPrv = monthly.smaPrev
+          ma10wRaw = weekly.ma10w; ma10wPrv = weekly.ma10wPrev; ma20wRaw = weekly.ma20w
+          rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
+          volumeW = weekly.volumeW ?? null; volumeWAvg10 = weekly.volumeWAvg10 ?? null
+        }
 
-          if (!rawClose || !ma10mRaw || !ma10wRaw || !ma20wRaw) return null
-          return scoreStock({
-            ticker: stock.ticker, name: stock.name, market: 'kr',
-            isKorean: true, rawClose,
-            ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw,
-            volumeW, volumeWAvg10,
-          })
-        } catch (_) { return null }
-      }))
-      batch.forEach(r => { if (r) results.push(r) })
+        if (!rawClose || !ma10mRaw || !ma10wRaw || !ma20wRaw) { _statApiFail++; continue }
+        saveMaToCache(stock.ticker, { rawClose, ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw, volumeW, volumeWAvg10 })
+        const scored = scoreStock({
+          ticker: stock.ticker, name: stock.name, market: 'kr',
+          isKorean: true, rawClose, ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw, volumeW, volumeWAvg10,
+        })
+        if (scored) results.push(scored)
+      } catch (_) { _statApiFail++ }
     }
     return results
   }
 
-  // ── 그룹 C: 미국 주식 (Yahoo Finance, 10개씩 + 배치 간 300ms 딜레이) ──
+  // ── 그룹 C: 미국 주식 (Yahoo Finance) ──
+  // Yahoo Finance는 Cloudflare Workers IP에서 동시 요청이 오면 대부분 차단합니다.
+  // 해결: 한 종목씩 순차 처리 + 500ms 간격으로 레이트리밋을 확실히 피합니다.
+  // KV 캐시가 있는 종목은 건너뛰므로, 2~3번 재스캔하면 대부분 캐싱됩니다.
   async function scanUsStocks(): Promise<QuantStockResult[]> {
-    const US_BATCH = 10
-    const US_DELAY = 300
     const results: QuantStockResult[] = []
-    for (let i = 0; i < usUniverse.length; i += US_BATCH) {
-      if (i > 0) await new Promise(r => setTimeout(r, US_DELAY))
-      const batch = await Promise.all(usUniverse.slice(i, i + US_BATCH).map(async (stock) => {
-        try {
-          const { yhTicker } = inferTicker(stock.ticker)
-          // Yahoo 월봉+주봉 병렬, 실패 시 1회 재시도
-          let monthly = await fetchMa10Data(yhTicker)
-          let weekly  = await fetchMaWeeklyData(yhTicker)
-          if (!monthly || !weekly) {
-            await new Promise(r => setTimeout(r, 300))
-            if (!monthly) monthly = await fetchMa10Data(yhTicker)
-            if (!weekly)  weekly  = await fetchMaWeeklyData(yhTicker)
-          }
-          if (!monthly || !weekly) return null
+    // KV 캐시 히트인 종목은 API 호출 건너뜀
+    const usNeedScan: typeof usUniverse = []
+    for (const stock of usUniverse) {
+      const cached = tryScoreFromCache(stock.ticker, stock.name, 'us', false)
+      if (cached) { results.push(cached); continue }
+      usNeedScan.push(stock)
+    }
+    // 한 종목씩 순차 처리 — Yahoo 레이트리밋 방지
+    // 종목당: 월봉 호출 → 주봉 호출 → 500ms 대기
+    // 20초 시간 제한 — Workers 타임아웃 방지, 나머지는 다음 스캔에서 KV 캐시로 커버
+    const usDeadline = Date.now() + 20000
+    for (let i = 0; i < usNeedScan.length; i++) {
+      if (Date.now() > usDeadline) break
+      const stock = usNeedScan[i]
+      if (i > 0) await new Promise(r => setTimeout(r, 500))
+      try {
+        const { yhTicker } = inferTicker(stock.ticker)
+        const monthly = await fetchMa10Data(yhTicker)
+        if (!monthly) { _statApiFail++; continue }
+        await new Promise(r => setTimeout(r, 300))
+        const weekly = await fetchMaWeeklyData(yhTicker)
+        if (!weekly) { _statApiFail++; continue }
 
-          const rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
-          if (!rawClose || !monthly.ma10 || !weekly.ma10w || !weekly.ma20w) return null
+        const rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
+        if (!rawClose || !monthly.ma10 || !weekly.ma10w || !weekly.ma20w) { _statApiFail++; continue }
 
-          return scoreStock({
-            ticker: stock.ticker, name: stock.name, market: 'us',
-            isKorean: false, rawClose,
-            ma10mRaw: monthly.ma10, ma10mPrv: monthly.smaPrev,
-            ma10wRaw: weekly.ma10w, ma10wPrv: weekly.ma10wPrev, ma20wRaw: weekly.ma20w,
-            volumeW: weekly.volumeW ?? null, volumeWAvg10: weekly.volumeWAvg10 ?? null,
-          })
-        } catch (_) { return null }
-      }))
-      batch.forEach(r => { if (r) results.push(r) })
+        const ma10mRaw = monthly.ma10, ma10mPrv = monthly.smaPrev ?? null
+        const ma10wRaw = weekly.ma10w, ma10wPrv = weekly.ma10wPrev ?? null, ma20wRaw = weekly.ma20w
+        const volumeW = weekly.volumeW ?? null, volumeWAvg10 = weekly.volumeWAvg10 ?? null
+        saveMaToCache(stock.ticker, { rawClose, ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw, volumeW, volumeWAvg10 })
+        const scored = scoreStock({
+          ticker: stock.ticker, name: stock.name, market: 'us',
+          isKorean: false, rawClose,
+          ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw,
+          volumeW, volumeWAvg10,
+        })
+        if (scored) results.push(scored)
+      } catch (_) { _statApiFail++ }
     }
     return results
   }
+
+  // ── 이전 결과 로드 (재스캔 시 API 실패로 종목이 사라지는 것 방지) ──
+  // Cloudflare Workers는 매 요청마다 메모리가 리셋될 수 있으므로,
+  // KV에 저장된 이전 결과를 기반(base)으로 삼고 새 결과로 덮어씁니다.
+  let previousItems: QuantStockResult[] = []
+  try {
+    const prev = await env.CUSTOM_TICKERS.get(QUANT_TOP50_KV_KEY, 'json') as QuantCacheData | null
+    if (prev?.items) previousItems = prev.items
+  } catch (_) {}
 
   // ── 3개 그룹 동시 실행 ──
   const [coinResults, krResults, usResults] = await Promise.all([
@@ -2155,23 +2326,38 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   ])
   passed.push(...coinResults, ...krResults, ...usResults)
 
+  // ── 이전 결과와 병합 ──
+  // 새 스캔에서 성공한 종목 → 최신 데이터로 교체
+  // 새 스캔에서 API 실패한 종목 → 이전 데이터 유지 (사라지지 않음)
+  // 이전에 없던 새 종목 → 추가
+  const mergedMap = new Map<string, QuantStockResult>()
+  previousItems.forEach(item => mergedMap.set(item.ticker, item))  // 이전 결과를 기반으로
+  passed.forEach(item => mergedMap.set(item.ticker, item))          // 새 결과로 덮어쓰기
+  const merged = Array.from(mergedMap.values())
+
   // 총점 내림차순 정렬 → Top 50 선정
-  passed.sort((a, b) => b.score - a.score)
-  const top50 = passed.slice(0, 50).map((item, idx) => ({ ...item, rank: idx + 1 }))
+  merged.sort((a, b) => b.score - a.score)
+  const top50 = merged.slice(0, 50).map((item, idx) => ({ ...item, rank: idx + 1 }))
 
   const cacheData: QuantCacheData = {
     items:        top50,
     builtAt:      new Date().toISOString(),
     totalScanned: krUniverse.length + usUniverse.length + COIN_UNIVERSE.length,
     passed:       passed.length,
+    // 진단 정보 — cacheHit가 높을수록 효율적 (API 호출 절약)
+    scanStats: { apiFail: _statApiFail, filtered: _statFiltered, success: _statSuccess, cacheHit: _statCacheHit },
+    mergedFromPrev: previousItems.length,
   }
 
-  // KV 저장 (2시간 TTL)
+  // 종목별 MA 캐시를 KV에 저장 (다음 스캔에서 성공한 종목은 API 호출 건너뜀)
+  await saveQuantMaCache(env.CUSTOM_TICKERS, maCache)
+
+  // 퀀트 결과 KV 저장 (4시간 TTL)
   try {
     await env.CUSTOM_TICKERS.put(
       QUANT_TOP50_KV_KEY,
       JSON.stringify(cacheData),
-      { expirationTtl: 2 * 60 * 60 }
+      { expirationTtl: 4 * 60 * 60 }
     )
   } catch (_) {}
 
