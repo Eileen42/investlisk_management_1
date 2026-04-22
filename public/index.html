@@ -1260,6 +1260,10 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
             <div class="mock-stat-value" id="mock-cash">-</div>
           </div>
           <div class="mock-stat-box">
+            <div class="mock-stat-label">투자원금</div>
+            <div class="mock-stat-value" id="mock-invested">-</div>
+          </div>
+          <div class="mock-stat-box">
             <div class="mock-stat-label">평가 금액</div>
             <div class="mock-stat-value" id="mock-eval">-</div>
           </div>
@@ -9230,6 +9234,9 @@ function updateMockSummary() {
 
   document.getElementById('mock-initial-capital').textContent = '₩' + fmtNum(initial);
   document.getElementById('mock-cash').textContent = '₩' + fmtNum(Math.round(cash));
+  // 투자원금 = 보유 종목의 (수량 × 평균단가) 합 — 이미 위에서 costAmt로 계산됨
+  var investedEl = document.getElementById('mock-invested');
+  if (investedEl) investedEl.textContent = '₩' + fmtNum(Math.round(costAmt));
   document.getElementById('mock-eval').textContent = '₩' + fmtNum(Math.round(evalAmt));
 
   var pnlEl = document.getElementById('mock-pnl');
