@@ -1011,10 +1011,15 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
           <button onclick="loadRadarList()"  id="radar-load-btn"  class="btn-secondary text-sm px-4 py-2"><i class="fas fa-download mr-1"></i> 목록 불러오기</button>
           <button onclick="scanRadar()"      id="radar-scan-btn"  class="btn-primary   text-sm px-4 py-2"><i class="fas fa-search mr-1"></i> 10이평 스캔</button>
         </div>
+        <div id="quant-scan-btns" class="ml-auto flex gap-2" style="display:none;">
+          <button onclick="refreshQuantTop50()" id="quant-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 퀀트 재스캔</button>
+        </div>
       </div>
 
       <!-- 기존 레이더 메인 패널 -->
       <div id="radar-main-panel" style="display:none;">
+        <!-- 랭킹 기준 설명 (탭에 따라 switchRadarTab에서 갱신) -->
+        <div id="radar-desc" class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 leading-relaxed"></div>
         <!-- 상태 표시 -->
         <div id="radar-status" class="text-xs text-slate-400 mb-2 h-4"></div>
 
@@ -1035,15 +1040,15 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
             </colgroup>
             <thead style="position:sticky;top:0;z-index:10;background:white;">
               <tr>
-                <th class="text-center">순위</th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"         onclick="toggleSort('radar','rank')"         title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>
                 <th>종목명</th>
-                <th class="text-right">현재가</th>
+                <th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="curPrice"     onclick="toggleSort('radar','curPrice')"     title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
                 <th class="text-center">신호</th>
-                <th class="text-center">총점 <button onclick="toggleQuantScoreGuide(event)" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>
-                <th class="text-center">이격도% <button onclick="toggleRadarDistGuide(event)" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>
-                <th class="text-center">거래량</th>
-                <th class="text-center">주봉↑</th>
-                <th class="text-center">월봉↑</th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="score"        onclick="toggleSort('radar','score')"        title="클릭하여 정렬">총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleQuantScoreGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="gapPct"       onclick="toggleSort('radar','gapPct')"       title="클릭하여 정렬">이격도%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleRadarDistGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="volRatio"     onclick="toggleSort('radar','volRatio')"     title="클릭하여 정렬">거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="weeklySlope"  onclick="toggleSort('radar','weeklySlope')"  title="클릭하여 정렬">주봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="monthlySlope" onclick="toggleSort('radar','monthlySlope')" title="클릭하여 정렬">월봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
                 <th class="text-center">관심</th>
               </tr>
             </thead>
@@ -1065,15 +1070,10 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
 
       <!-- ══ 퀀트 TOP50 패널 ══ -->
       <div id="quant-panel">
-        <!-- 상단 설명 + 버튼 -->
-        <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
-          <div>
-            <p class="text-xs text-slate-500 leading-relaxed">
-              S&P500 Top100 · 국장 Top100 · <b>절대 필터 3종 + 4가지 스코어링(100점)</b>으로 상승 초기 진입 최적 종목 추출<br>
-              <span class="text-slate-400">결과는 24시간 캐시 → "퀀트 재스캔"으로 즉시 갱신</span>
-            </p>
-          </div>
-          <button onclick="refreshQuantTop50()" id="quant-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 퀀트 재스캔</button>
+        <!-- 랭킹 기준 서브 설명 (버튼은 상단 탭 줄의 quant-scan-btns로 이동) -->
+        <div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 leading-relaxed">
+          🎯 <b>총점 100점 내림차순 랭킹</b> · 유니버스: S&amp;P500 100 + 국장 100 + 코인 15 (총 215개 스캔) · 절대 필터 3종(P&gt;월봉SMA10, P&gt;주봉SMA10, 주봉SMA10&gt;SMA20) 통과 대상만
+          <div class="text-slate-500 mt-1">A 이격도 <b>30</b> + B 하이브리드 거래량 <b>30</b> (일간 15 + 롤링 5일 15) + C 주봉 기울기 <b>20</b> + D 월봉 기울기 <b>20</b> · 결과는 24h 캐시</div>
         </div>
 
         <!-- 스캔 진행 표시 -->
@@ -1101,18 +1101,18 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
             </colgroup>
             <thead style="position:sticky;top:0;z-index:10;background:white;">
               <tr>
-                <th class="text-center">순위</th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"         onclick="toggleSort('quant','rank')"         title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>
                 <th>종목명</th>
-                <th class="text-right">현재가</th>
-                <th class="text-center">총점
-                  <button onclick="toggleQuantScoreGuide(event)" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:2px;">!</button>
+                <th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="price"        onclick="toggleSort('quant','price')"        title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="score"        onclick="toggleSort('quant','score')"        title="클릭하여 정렬">총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span>
+                  <button onclick="event.stopPropagation();toggleQuantScoreGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:2px;">!</button>
                 </th>
-                <th class="text-center">이격도%
-                  <button onclick="toggleQuantGapGuide(event)" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:2px;">!</button>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="gapPct"       onclick="toggleSort('quant','gapPct')"       title="클릭하여 정렬">이격도%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span>
+                  <button onclick="event.stopPropagation();toggleQuantGapGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:2px;">!</button>
                 </th>
-                <th class="text-center">거래량비율</th>
-                <th class="text-center">주봉기울기</th>
-                <th class="text-center">월봉기울기</th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="volRatio"     onclick="toggleSort('quant','volRatio')"     title="클릭하여 정렬">거래량비율<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="weeklySlope"  onclick="toggleSort('quant','weeklySlope')"  title="클릭하여 정렬">주봉기울기<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="monthlySlope" onclick="toggleSort('quant','monthlySlope')" title="클릭하여 정렬">월봉기울기<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
                 <th class="text-center">관심</th>
               </tr>
             </thead>
@@ -1128,14 +1128,14 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
 
       <!-- ══ 인기코인 TOP50 패널 ══ -->
       <div id="coin-top50-panel" style="display:none;">
-        <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
-          <div>
-            <p class="text-xs text-slate-500 leading-relaxed">
-              업비트 KRW 마켓 <b>24시간 거래대금 상위 50개 코인</b>의 월봉·주봉 이평선 기반 추세 신호 + 퀀트 점수<br>
-              <span class="text-slate-400">결과는 1시간 캐시 → "재스캔"으로 즉시 갱신</span>
-            </p>
-          </div>
+        <!-- 상단 버튼 -->
+        <div class="flex items-start justify-end gap-3 mb-2 flex-wrap">
           <button onclick="refreshCoinTop50()" id="coin-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 재스캔</button>
+        </div>
+        <!-- 랭킹 기준 서브 설명 -->
+        <div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 leading-relaxed">
+          🪙 <b>업비트 KRW 마켓 · 24시간 거래대금 상위 50 내림차순</b> — 랭킹 기준은 <b>24h 거래대금</b> (퀀트 점수가 아님)
+          <div class="text-slate-500 mt-1">각 코인의 A/B/C/D 점수·10이평 신호는 일봉 1회 조회로 재가공 계산 · 결과는 1h 캐시</div>
         </div>
 
         <div id="coin-build-progress" style="display:none;" class="mb-3 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 rounded-xl px-4 py-3 border border-amber-200">
@@ -1161,15 +1161,15 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
             </colgroup>
             <thead style="position:sticky;top:0;z-index:10;background:white;">
               <tr>
-                <th class="text-center">순위</th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"         onclick="toggleSort('coin','rank')"         title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>
                 <th>코인명</th>
-                <th class="text-right">현재가</th>
+                <th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="price"        onclick="toggleSort('coin','price')"        title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
                 <th class="text-center">신호</th>
-                <th class="text-center">총점 <button onclick="toggleQuantScoreGuide(event)" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>
-                <th class="text-center">이격도%</th>
-                <th class="text-center">거래량</th>
-                <th class="text-center">주봉↑</th>
-                <th class="text-center">월봉↑</th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="score"        onclick="toggleSort('coin','score')"        title="클릭하여 정렬">총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleQuantScoreGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="gapPct"       onclick="toggleSort('coin','gapPct')"       title="클릭하여 정렬">이격도%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="volRatio"     onclick="toggleSort('coin','volRatio')"     title="클릭하여 정렬">거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="weeklySlope"  onclick="toggleSort('coin','weeklySlope')"  title="클릭하여 정렬">주봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
+                <th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="monthlySlope" onclick="toggleSort('coin','monthlySlope')" title="클릭하여 정렬">월봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>
                 <th class="text-center">관심</th>
               </tr>
             </thead>
@@ -2527,31 +2527,55 @@ var _lastLoadedStockCount = 0;   // loadFromSheets() 성공 시 기록
 var _lastLoadedTradeCount = 0;   // loadTradesFromSheets() 성공 시 기록
 var _sheetsLoadSuccess    = false; // 시트 로드가 한 번이라도 성공했는지
 
-// 시트 저장 전 안전 검증 — 데이터가 비정상적으로 사라졌으면 저장 차단
-// "빈 배열로 시트를 덮어쓰는 것"이 가장 위험한 사고이므로 이를 원천 차단
+// 시트 저장 전 안전 검증 — 시트가 임의로 삭제·변경되는 것을 원천 차단
+// ┌──────────────────────────────────────────────────────────────────┐
+// │ ★ 안전망 정책 (사용자 절대 요구사항)                              │
+// │   "시트를 마음대로 삭제하거나 변경하는 행위는 절대 없어야 한다"  │
+// │                                                                    │
+// │ 1) 시트 로드가 한 번도 성공하지 않았으면 저장 금지                │
+// │ 2) 메모리에 종목이 0개면 무조건 저장 금지 (시트가 비워질 위험)    │
+// │ 3) 종목 수가 직전 로드보다 50% 이상 갑자기 줄었으면 저장 금지     │
+// │    (5개 이상 보유한 사용자에 한해서만 적용 — 소형 포트폴리오 보호) │
+// │                                                                    │
+// │ 부작용: 사용자가 마지막 종목까지 모두 삭제하려면 Google Sheets    │
+// │ 화면에서 직접 행을 비워야 함. 이는 안전과 맞바꾼 의도된 제약.    │
+// └──────────────────────────────────────────────────────────────────┘
 function canSafeSaveStocks() {
-  // 시트 로드가 아직 한 번도 성공하지 않았으면 저장 금지
+  // [SAFETY-1] 시트 로드 미완료 시 저장 절대 금지
   if (!_sheetsLoadSuccess) {
     console.warn('[SHEET GUARD] 시트 로드 미완료 — 저장 차단');
     return false;
   }
-  // 로드 시 종목이 있었는데 지금 0개면 비정상 (전체 삭제 사고 방지)
-  if (_lastLoadedStockCount > 0 && appData.stocks.length === 0) {
-    console.error('[SHEET GUARD] 종목 ' + _lastLoadedStockCount + '개 → 0개 감소 감지 — 저장 차단!');
-    toast('⚠️ 데이터 이상 감지! 저장이 차단되었습니다. 새로고침 해주세요.', 'error');
+  // [SAFETY-2] 메모리 0개 → 시트 덮어쓰면 시트 전체 비워짐 → 데이터 영구 손실
+  if (!appData.stocks || appData.stocks.length === 0) {
+    console.error('[SHEET GUARD] 메모리 종목 0개 — 시트 보호 위해 저장 차단');
+    toast('⚠️ 메모리 데이터가 비어있어 시트 보호를 위해 자동 저장을 막았어요. 새로고침 해주세요.', 'error');
+    return false;
+  }
+  // [SAFETY-3] 직전 로드 5개↑ 보유자가 갑자기 절반 이하로 줄면 비정상
+  if (_lastLoadedStockCount >= 5 && appData.stocks.length < _lastLoadedStockCount * 0.5) {
+    console.error('[SHEET GUARD] 종목 50%↑ 감소 감지 (' + _lastLoadedStockCount + '→' + appData.stocks.length + ') — 저장 차단');
+    toast('⚠️ 종목 수가 갑자기 절반 이상 줄었어요. 안전을 위해 저장이 차단됐습니다. 새로고침 해주세요.', 'error');
     return false;
   }
   return true;
 }
 function canSafeSaveTrades() {
+  // [SAFETY-1]
   if (!_sheetsLoadSuccess) {
     console.warn('[SHEET GUARD] 시트 로드 미완료 — 거래내역 저장 차단');
     return false;
   }
-  // 거래내역이 있었는데 갑자기 0개면 비정상
-  if (_lastLoadedTradeCount > 0 && appData.trades.length === 0) {
-    console.error('[SHEET GUARD] 거래내역 ' + _lastLoadedTradeCount + '개 → 0개 감소 감지 — 저장 차단!');
-    toast('⚠️ 거래내역 이상 감지! 저장이 차단되었습니다. 새로고침 해주세요.', 'error');
+  // [SAFETY-2] 메모리 거래내역 0개 → 시트 보호 위해 저장 차단
+  if (!appData.trades || appData.trades.length === 0) {
+    console.error('[SHEET GUARD] 메모리 거래내역 0개 — 시트 보호 위해 저장 차단');
+    toast('⚠️ 거래내역 메모리가 비어있어 시트 보호를 위해 자동 저장을 막았어요. 새로고침 해주세요.', 'error');
+    return false;
+  }
+  // [SAFETY-3] 직전 로드 5건↑이었는데 갑자기 절반 이하면 비정상
+  if (_lastLoadedTradeCount >= 5 && appData.trades.length < _lastLoadedTradeCount * 0.5) {
+    console.error('[SHEET GUARD] 거래내역 50%↑ 감소 (' + _lastLoadedTradeCount + '→' + appData.trades.length + ') — 저장 차단');
+    toast('⚠️ 거래내역 수가 갑자기 절반 이상 줄었어요. 안전을 위해 저장이 차단됐습니다. 새로고침 해주세요.', 'error');
     return false;
   }
   return true;
@@ -3335,9 +3359,17 @@ function loadFromSheets() {
   return gFetch(SHEETS_BASE + '/' + ssId + '/values:batchGet?' + rangeParams).then(function(data) {
     var vr = data.valueRanges || [];
 
-    // ① 마스터데이터 (A2:R)
+    // [SHEET GUARD] batchGet 응답 자체가 비정상이면 보호 모드 — 메모리/시트 모두 변경 안 함
+    // 정상이면 valueRanges 배열에 6개 (마스터/거래/스냅샷/모의투자/모의스냅/모의자본금)가 들어옴
+    if (vr.length < 5) {
+      console.error('[SHEET GUARD] batchGet valueRanges 개수 부족 (' + vr.length + ') — 캐시 데이터 보존');
+      toast('⚠️ 시트 응답 이상. 캐시 데이터를 그대로 유지합니다.', 'warning');
+      return; // appData 건드리지 않음, _sheetsLoadSuccess도 변경 안 함
+    }
+
+    // 후보 데이터 미리 계산 (appData 직접 변경 금지 — 검증 후에만 반영)
     var masterRows = (vr[0] && vr[0].values) || [];
-    appData.stocks = masterRows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+    var newStocks = masterRows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
         broker: r[0]||'', name: r[1]||'', type: r[2]||'', ticker: r[17]||'',
         avgPrice: parseNum(r[3]), curPrice: parseNum(r[4]), qty: parseNum(r[5]),
@@ -3345,20 +3377,36 @@ function loadFromSheets() {
         cfCycle: r[12]||'매월', cfAmount: parseIntNum(r[13]), cfDecision: r[16]||'계속',
       };
     });
-    // [SHEET GUARD] 로드 성공 시 원본 개수 기록 — 저장 전 비교용
-    _lastLoadedStockCount = appData.stocks.length;
-    _sheetsLoadSuccess = true;
 
-    // ② 거래내역 (A2:H)
     var tradeRows = (vr[1] && vr[1].values) || [];
-    appData.trades = tradeRows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+    var newTrades = tradeRows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
         date: r[0]||'', name: r[1]||'', ticker: r[2]||'',
         type: r[3]||'매수', qty: parseNum(r[4]), price: parseNum(r[5]),
         fee: parseNum(r[6]), memo: r[7]||'',
       };
     });
-    // [SHEET GUARD] 거래내역 로드 성공 시 원본 개수 기록
+
+    // [SHEET GUARD] 빈 응답 보호 — 이전에 데이터가 있었는데 갑자기 0개로 들어오면 비정상
+    // 가능성: ① batchGet API 일시 오류 ② 토큰 일시적 권한 부족 ③ 시트명 일시 불일치
+    // → appData를 건드리지 않고 사용자에게 새로고침 안내
+    var hadPriorStocks = (_lastLoadedStockCount > 0) || ((appData.stocks||[]).length > 0);
+    var hadPriorTrades = (_lastLoadedTradeCount > 0) || ((appData.trades||[]).length > 0);
+    if ((hadPriorStocks && newStocks.length === 0) || (hadPriorTrades && newTrades.length === 0)) {
+      console.error('[SHEET GUARD] 시트 응답 비어있음 + 이전 데이터 존재 — 메모리 보존');
+      console.error('  - 이전 종목 ' + _lastLoadedStockCount + '개, 새 응답 ' + newStocks.length + '개');
+      console.error('  - 이전 거래 ' + _lastLoadedTradeCount + '개, 새 응답 ' + newTrades.length + '개');
+      toast('⚠️ 시트 응답이 비어있어요. 데이터를 안전하게 보호하기 위해 캐시를 유지합니다. 잠시 후 새로고침 해주세요.', 'error');
+      return; // appData도 카운터도 그대로 둠
+    }
+
+    // ① 마스터데이터 정상 반영
+    appData.stocks = newStocks;
+    _lastLoadedStockCount = appData.stocks.length;
+    _sheetsLoadSuccess = true;
+
+    // ② 거래내역 정상 반영
+    appData.trades = newTrades;
     _lastLoadedTradeCount = appData.trades.length;
 
     // ③ 자산스냅샷 (A2:C)
@@ -3411,7 +3459,7 @@ function loadFromSheets() {
 function _loadFromSheetsFallback() {
   return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R')).then(function(data) {
     var rows = data.values || [];
-    appData.stocks = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+    var newStocks = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
         broker: r[0]||'', name: r[1]||'', type: r[2]||'', ticker: r[17]||'',
         avgPrice: parseNum(r[3]), curPrice: parseNum(r[4]), qty: parseNum(r[5]),
@@ -3419,12 +3467,21 @@ function _loadFromSheetsFallback() {
         cfCycle: r[12]||'매월', cfAmount: parseIntNum(r[13]), cfDecision: r[16]||'계속',
       };
     });
+    // [SHEET GUARD] 폴백 로드: 이전 데이터가 있었는데 빈 응답이면 보호 모드
+    var hadPriorStocks = (_lastLoadedStockCount > 0) || ((appData.stocks||[]).length > 0);
+    if (hadPriorStocks && newStocks.length === 0) {
+      console.error('[SHEET GUARD] 폴백 로드 빈 응답 + 이전 데이터 존재 — 메모리 보존');
+      toast('⚠️ 시트 응답이 비어있어요. 캐시 데이터를 유지합니다. 새로고침 해주세요.', 'error');
+      return; // appData/카운터 변경 안 함
+    }
+    appData.stocks = newStocks;
     _lastLoadedStockCount = appData.stocks.length;
     _sheetsLoadSuccess = true;
   }).catch(function(e) {
     console.warn('시트 읽기 실패', e);
-    appData.stocks = [];
-    toast('마스터 데이터 로드에 실패했어요. 네트워크 연결을 확인해주세요.', 'error');
+    // [SHEET GUARD] 로드 실패 시 빈 배열로 덮어쓰지 않음 — 캐시 데이터 유지
+    // (기존 동작: appData.stocks=[] → 다음 자동저장이 시트를 비울 위험)
+    toast('마스터 데이터 로드에 실패했어요. 네트워크 연결을 확인해주세요. (캐시 데이터 유지)', 'error');
   })
   .then(function() { return loadTradesFromSheets(); })
   .then(function() { return loadSnapshotsFromSheets(); })
@@ -3437,7 +3494,7 @@ function loadTradesFromSheets() {
   if (!ssId) return Promise.resolve();
   return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_TRADE + '!A2:H')).then(function(data) {
     var rows = data.values || [];
-    appData.trades = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
+    var newTrades = rows.filter(function(r) { return r[0] || r[1]; }).map(function(r) {
       return {
         date:   r[0]||'',
         name:   r[1]||'',
@@ -3449,12 +3506,19 @@ function loadTradesFromSheets() {
         memo:   r[7]||'',
       };
     });
-    // [SHEET GUARD] 거래내역 로드 성공 시 원본 개수 기록
+    // [SHEET GUARD] 빈 응답 + 이전 데이터 존재 → 메모리 보존
+    var hadPriorTrades = (_lastLoadedTradeCount > 0) || ((appData.trades||[]).length > 0);
+    if (hadPriorTrades && newTrades.length === 0) {
+      console.error('[SHEET GUARD] 거래내역 빈 응답 + 이전 데이터 존재 — 메모리 보존');
+      toast('⚠️ 거래내역 응답이 비어있어요. 캐시 데이터를 유지합니다.', 'error');
+      return; // appData/카운터 변경 안 함
+    }
+    appData.trades = newTrades;
     _lastLoadedTradeCount = appData.trades.length;
   }).catch(function(e) {
     console.warn('거래내역 시트 읽기 실패', e);
-    appData.trades = [];
-    toast('거래내역 로드에 실패했어요. 새로고침 후 다시 시도해주세요.', 'error');
+    // [SHEET GUARD] 로드 실패 시 빈 배열로 덮어쓰지 않음 — 캐시 데이터 유지
+    toast('거래내역 로드에 실패했어요. (캐시 데이터 유지)', 'error');
   });
 }
 
@@ -3529,8 +3593,13 @@ function saveTradesToSheets() {
   var rows = appData.trades.map(function(t) {
     return [t.date, t.name, t.ticker, t.type, t.qty, t.price, t.fee||0, t.memo||''];
   });
+  // [SHEET GUARD] rows가 0개면 :clear 호출 자체를 차단 (시트 비워짐 방지)
+  // canSafeSaveTrades에서 이미 막지만, 이중 안전망
+  if (!rows.length) {
+    console.warn('[SHEET GUARD] 거래내역 rows 0개 — :clear 호출 차단');
+    return Promise.resolve();
+  }
   return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_TRADE + '!A2:H') + ':clear', 'POST').then(function() {
-    if (!rows.length) return;
     return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_TRADE + '!A2') + '?valueInputOption=RAW', 'PUT', { values: rows });
   }).then(function() {
     // [SHEET GUARD] 저장 성공 후 카운트 갱신
@@ -3584,9 +3653,15 @@ function saveToSheets() {
     var weedTxt = ({yes:'🌿 잡초', caution:'⚠️ 주의', no:'✅ 양호', neutral:'-'})[getWeed(s)] || '-';
     return [s.broker,s.name,s.type,s.avgPrice,s.curPrice,s.qty,invest,eval_,rate,weedTxt,s.monthEndPrice||'',s.ma10||'',s.cfCycle,s.cfAmount,monthly,monthly*12,s.cfDecision,s.ticker||''];
   });
+  // [SHEET GUARD] rows가 0개면 :clear 호출 자체를 차단 (시트 비워짐 방지) — 이중 안전망
+  if (!rows.length) {
+    console.warn('[SHEET GUARD] 마스터 rows 0개 — :clear 호출 차단');
+    isSyncing = false;
+    setSyncStatus('err', '저장 차단');
+    return Promise.resolve();
+  }
   // 기존 데이터 클리어 후 재작성
   return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R') + ':clear', 'POST').then(function() {
-    if (!rows.length) return;
     return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2') + '?valueInputOption=RAW', 'PUT', { values: rows });
   }).then(function() {
     var now = new Date();
@@ -5943,6 +6018,109 @@ var _quantLwChart    = null;  // 드로어 내부 LightweightCharts 인스턴스
 var _quantChartInterval = '1mo'; // 현재 드로어 차트 간격
 var _quantDrawerItem = null;  // 현재 드로어에 표시 중인 종목
 
+// 레이더/퀀트/코인 테이블 정렬 상태
+// col: 정렬 대상 컬럼 키 (rank/price/curPrice/score/gapPct/volRatio/weeklySlope/monthlySlope)
+// order: 'asc' | 'desc'
+// 초기값 = rank 오름차순 (서버 반환 순서 = 탭별 랭킹 기준)
+var _sortStates = {
+  radar: { col: 'rank', order: 'asc' },
+  quant: { col: 'rank', order: 'asc' },
+  coin:  { col: 'rank', order: 'asc' },
+};
+
+// 탭별로 item에서 정렬 비교값 추출.
+// 레이더는 `radarScanData[ticker]`에 총점·이격도 등이 분산 저장되므로 함께 조회.
+function getSortValue(which, item, col) {
+  if (!item) return null;
+  if (which === 'radar') {
+    var scan = radarScanData[item.ticker] || {};
+    if (col === 'rank')         return item.rank;
+    if (col === 'curPrice')     return scan.curPrice != null ? scan.curPrice : item.price;
+    if (col === 'score')        return scan.score;
+    if (col === 'gapPct')       return scan.gapPct;
+    if (col === 'volRatio')     return scan.volRatio;
+    if (col === 'weeklySlope')  return scan.weeklySlope;
+    if (col === 'monthlySlope') return scan.monthlySlope;
+    return item[col];
+  }
+  // quant / coin은 item 자체에 모든 필드가 있음
+  return item[col];
+}
+
+// 현재 탭의 정렬 상태대로 items 배열을 복사·정렬해 반환 (원본 보호).
+// null/undefined 값은 오름/내림 관계 없이 항상 끝으로 밀어냄.
+function sortItems(which, items) {
+  if (!items || !items.length) return items || [];
+  var s = _sortStates[which];
+  if (!s) return items.slice();
+  var col = s.col, order = s.order;
+  var out = items.slice();
+  out.sort(function(a, b) {
+    var va = getSortValue(which, a, col);
+    var vb = getSortValue(which, b, col);
+    var na = (va == null), nb = (vb == null);
+    if (na && nb) return 0;
+    if (na) return 1;
+    if (nb) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') {
+      return order === 'desc' ? vb - va : va - vb;
+    }
+    var cmp = String(va).localeCompare(String(vb));
+    return order === 'desc' ? -cmp : cmp;
+  });
+  return out;
+}
+
+// 새 컬럼 첫 클릭 시 적용할 기본 방향.
+// 순위(rank)/이름은 오름차순이 자연스럽고, 나머지 수치는 큰 값부터 보고 싶으므로 내림차순.
+function defaultSortOrder(col) {
+  if (col === 'rank' || col === 'name') return 'asc';
+  return 'desc';
+}
+
+// 헤더 클릭 핸들러: 같은 컬럼 재클릭 → 방향 토글, 다른 컬럼 → 새 기본 방향 적용.
+function toggleSort(which, col) {
+  var s = _sortStates[which];
+  if (!s) return;
+  if (s.col === col) {
+    s.order = s.order === 'asc' ? 'desc' : 'asc';
+  } else {
+    s.col = col;
+    s.order = defaultSortOrder(col);
+  }
+  updateSortHeaders(which);
+  if (which === 'quant' && quantData) {
+    renderQuantTable(quantData.items || []);
+  } else if (which === 'radar') {
+    renderRadarTable();
+  } else if (which === 'coin' && coinTop50Data) {
+    renderCoinTop50Table(coinTop50Data);
+  }
+}
+
+// 헤더 아이콘 갱신 — 현재 정렬 중인 컬럼 한 곳에만 ▲/▼ 표시, 나머지는 빈 문자 (표식 최소화).
+function updateSortHeaders(which) {
+  var s = _sortStates[which];
+  if (!s) return;
+  var root = which === 'quant' ? document.getElementById('quant-panel')
+           : which === 'coin'  ? document.getElementById('coin-top50-panel')
+           :                      document.getElementById('radar-main-panel');
+  if (!root) return;
+  var ths = root.querySelectorAll('th[data-sort-col]');
+  for (var i = 0; i < ths.length; i++) {
+    var th   = ths[i];
+    var col  = th.getAttribute('data-sort-col');
+    var icon = th.querySelector('.sort-icon');
+    if (!icon) continue;
+    if (col === s.col) {
+      icon.textContent = s.order === 'asc' ? '▲' : '▼';
+      icon.style.color = '#475569';
+    } else {
+      icon.textContent = '';
+    }
+  }
+}
+
 // KIS 연결 상태 배지 초기화
 function initRadarKisBadge() {
   fetch('/api/kis/status').then(function(r){ return r.json(); }).then(function(d) {
@@ -5961,6 +6139,16 @@ function initRadarKisBadge() {
   }).catch(function(){});
 }
 
+// kr/us/watch 탭별 랭킹 기준 설명 (switchRadarTab에서 radar-desc에 주입)
+var RADAR_DESC_MAP = {
+  kr: '🏦 <b>KIS 거래대금 상위 100 · 복합 순위</b> (실시간) — 거래대금 <b>40%</b> + 거래대금 전일 대비 증가율 <b>40%</b> + 시가총액 <b>20%</b>'
+    + '<div class="text-slate-500 mt-1">잡주 필터: 거래대금 1억 미만·주가 2천원 미만 제외 · 종목 클릭 시 상세 스캔(100점 하이브리드 체계)</div>',
+  us: '🗽 <b>S&amp;P500 상위 100 · 시가총액 정적 순위</b> (분기별 수동 갱신)'
+    + '<div class="text-slate-500 mt-1">실시간 거래대금·증가율은 반영되지 않음 · 종목 클릭 시 상세 스캔(100점 하이브리드 체계)</div>',
+  watch: '⭐ <b>내 관심종목 · 저장 순서 유지</b>'
+    + '<div class="text-slate-500 mt-1">별(★)로 담아둔 종목들 · 스캔으로 10이평 신호와 A/B/C/D 점수를 실시간으로 채움</div>',
+};
+
 function switchRadarTab(tab) {
   radarCurrentTab = tab;
   ['quant','kr','us','watch','coin'].forEach(function(t) {
@@ -5974,14 +6162,18 @@ function switchRadarTab(tab) {
   var quantPanel   = document.getElementById('quant-panel');
   var coinPanel    = document.getElementById('coin-top50-panel');
   var scanBtns     = document.getElementById('radar-scan-btns');
+  var quantBtns    = document.getElementById('quant-scan-btns');
+  var radarDesc    = document.getElementById('radar-desc');
 
   if (mainPanel)  mainPanel.style.display  = 'none';
   if (quantPanel) quantPanel.style.display = 'none';
   if (coinPanel)  coinPanel.style.display  = 'none';
   if (scanBtns)   scanBtns.style.display   = 'none';
+  if (quantBtns)  quantBtns.style.display  = 'none';
 
   if (tab === 'quant') {
     if (quantPanel) quantPanel.style.display = '';
+    if (quantBtns)  quantBtns.style.display  = '';
     loadQuantTop50();
   } else if (tab === 'coin') {
     if (coinPanel)  coinPanel.style.display  = '';
@@ -5989,6 +6181,7 @@ function switchRadarTab(tab) {
   } else {
     if (mainPanel)  mainPanel.style.display  = '';
     if (scanBtns)   scanBtns.style.display   = '';
+    if (radarDesc && RADAR_DESC_MAP[tab]) radarDesc.innerHTML = RADAR_DESC_MAP[tab];
     autoLoadAndScanRadar();
   }
 }
@@ -6130,6 +6323,9 @@ function renderRadarTable() {
       '<span>목록 불러오기를 눌러 시작하세요</span></td></tr>';
     return;
   }
+
+  // 컬럼 정렬 적용 (서버 원본 보호, 헤더 클릭 시마다 오름/내림 토글)
+  items = sortItems('radar', items);
 
   tbody.innerHTML = items.map(function(item, idx) {
     var scan    = radarScanData[item.ticker] || {};
@@ -6300,6 +6496,9 @@ function renderCoinTop50Table(data) {
       '<span>재스캔을 눌러 코인 분석을 시작하세요</span></td></tr>';
     return;
   }
+
+  // 컬럼 정렬 적용 (기본 = 24h 거래대금 1위부터, 어떤 헤더든 클릭으로 재정렬)
+  items = sortItems('coin', items);
 
   tbody.innerHTML = items.map(function(item) {
     var signal = item.signal || null;
@@ -7680,6 +7879,9 @@ function renderQuantTable(items) {
     return;
   }
 
+  // 컬럼 정렬 적용 (기본 = 총점 100점 내림 랭킹 1위부터, 어떤 헤더든 클릭으로 재정렬)
+  items = sortItems('quant', items);
+
   tbody.innerHTML = items.map(function(item) {
     // 최적 진입 타점 뱃지 (85점 이상)
     var hotBadge = item.score >= 85
@@ -7947,7 +8149,9 @@ function toggleQuantScoreGuide(e) {
       + '</div>'
       + '<div style="background:#f5f3ff;border-radius:8px;padding:8px 10px;">'
         + '<div style="font-weight:700;color:#6d28d9;margin-bottom:2px;">B. 거래량 폭발 — 30점</div>'
-        + '<div style="color:#475569;font-size:12px;">이번 주 거래량 ÷ 10주 평균 · 2배↑=<b>30점</b>, 1배 미만=0점</div>'
+        + '<div style="color:#475569;font-size:12px;">일간 거래량 폭발(<b>15</b>) + 롤링 5일 기관 매집 검증(<b>15</b>)</div>'
+        + '<div style="color:#64748b;font-size:11px;margin-top:3px;">· 일간: 오늘÷20일 평균 · 2배↑=<b>15</b> / 1.5배↑=<b>5</b></div>'
+        + '<div style="color:#64748b;font-size:11px;">· 롤링 5일(코인 7일): 최근 N일÷직전 N×10일 평균 · 1.5배↑=<b>15</b> / 1배↑=<b>5</b></div>'
       + '</div>'
       + '<div style="background:#f0fdf4;border-radius:8px;padding:8px 10px;">'
         + '<div style="font-weight:700;color:#15803d;margin-bottom:2px;">C. 주봉 기울기 — 20점</div>'
@@ -7985,11 +8189,12 @@ function toggleQuantGapGuide(e) {
     '<div style="font-weight:800;color:#1e293b;margin-bottom:8px;font-size:14px;">📏 이격도(주봉 기준)란?</div>'
     + '<div style="color:#475569;">현재 주가가 <b>주봉 추세선(SMA10W)</b>으로부터 얼마나 위에 있는지 나타내요.</div>'
     + '<div style="margin-top:10px;display:grid;gap:6px;">'
-      + '<div style="background:#f0fdf4;border-radius:8px;padding:8px 10px;"><span style="color:#16a34a;font-weight:700;">0~3%</span> → <b>30점</b> — 추세선 직상단 (최적 진입 타점)</div>'
-      + '<div style="background:#fff7ed;border-radius:8px;padding:8px 10px;"><span style="color:#d97706;font-weight:700;">3~7%</span> → <b>15점</b> — 추세선에서 약간 이탈</div>'
-      + '<div style="background:#fef2f2;border-radius:8px;padding:8px 10px;"><span style="color:#dc2626;font-weight:700;">7% 초과</span> → <b>0점</b> — 단기 과열, 진입 대기</div>'
+      + '<div style="background:#f0fdf4;border-radius:8px;padding:8px 10px;"><span style="color:#16a34a;font-weight:700;">0~2%</span> → <b>30점</b> — 추세선 직상단 (최적 진입 타점)</div>'
+      + '<div style="background:#fff7ed;border-radius:8px;padding:8px 10px;"><span style="color:#d97706;font-weight:700;">2~8%</span> → <b>30→15점</b> — 추세선에서 약간 이탈 (선형 감소)</div>'
+      + '<div style="background:#fef2f2;border-radius:8px;padding:8px 10px;"><span style="color:#dc2626;font-weight:700;">8~15%</span> → <b>15→0점</b> — 단기 과열 (선형 감소)</div>'
+      + '<div style="background:#fecaca;border-radius:8px;padding:8px 10px;"><span style="color:#991b1b;font-weight:700;">15% 초과</span> → <b>0점</b> — 추격 금지</div>'
     + '</div>'
-    + '<div style="margin-top:10px;color:#94a3b8;font-size:11px;">💡 이격도가 0~3% 구간일 때가 추세추종 전략의 황금 진입 타점이에요.</div>'
+    + '<div style="margin-top:10px;color:#94a3b8;font-size:11px;">💡 이격도가 0~2% 구간일 때가 추세추종 전략의 황금 진입 타점이에요.</div>'
     + '<div style="text-align:right;margin-top:10px;"><button onclick="this.closest(\'div[style*=fixed]\').remove();_quantGapGuideEl=null;" style="background:#f1f5f9;border:none;border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer;color:#64748b;">닫기</button></div>';
   var rect = e.target.getBoundingClientRect();
   popup.style.top  = (rect.bottom + 8) + 'px';
@@ -8786,9 +8991,13 @@ function saveMasterRows() {
             s.monthEndPrice||'', s.ma10||'',
             s.cfCycle, s.cfAmount, monthly, monthly*12, s.cfDecision, s.ticker||''];
   });
+  // [SHEET GUARD] rows가 0개면 :clear 호출 자체를 차단 — 이중 안전망
+  if (!rows.length) {
+    console.warn('[SHEET GUARD] saveMasterRows rows 0개 — :clear 호출 차단');
+    return Promise.resolve();
+  }
   return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2:R') + ':clear', 'POST')
     .then(function() {
-      if (!rows.length) return;
       return gFetch(SHEETS_BASE + '/' + ssId + '/values/' + encodeURIComponent(SH_MASTER + '!A2') + '?valueInputOption=RAW', 'PUT', { values: rows });
     }).then(function() {
       // [SHEET GUARD] 저장 성공 후 카운트 갱신
