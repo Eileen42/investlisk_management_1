@@ -283,6 +283,108 @@ export function calcWeeklyMaFromBars(bars: KisWeeklyBar[]): KisWeeklyMaResult {
 }
 
 // ───────────────────────────────────────────────────
+// 국내 주식 일봉 데이터 조회 (퀀트 스캔용)
+// 동일 엔드포인트에 FID_PERIOD_DIV_CODE='D' 만 바꿔 조회. 수정주가 필수.
+//
+// ★ KIS 제약: inquire-daily-itemchartprice는 한 번 호출 시 output2 최대 100개 반환.
+//   3년치(~750거래일)가 필요하면 FID_INPUT_DATE_1/DATE_2 구간을 바꿔가며 페이지네이션 필수.
+//   [2026-04-23] 버그 수정: 기존에는 단일 호출로 100개만 받아
+//   월봉 resample 시 ~5개월 → monthlyBars.length<10 → 점수 계산 실패.
+//   페이지네이션으로 월봉 10이평, 주봉 20이평에 충분한 250영업일 이상 확보.
+// ───────────────────────────────────────────────────
+export interface KisDailyBar {
+  date:   string   // 'YYYYMMDD'
+  close:  number   // 수정주가 종가
+  volume: number   // 일간 거래량
+  open?:  number   // 당일 시가 (수정주가)  — 눌림목 턴어라운드 판정용
+  high?:  number   // 당일 고가 (수정주가)  — 20일 최고가 산출용
+}
+
+export async function fetchKisDomesticDaily(
+  env: KisEnv, stockCode: string
+): Promise<KisDailyBar[]> {
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+
+  // KIS inquire-daily-itemchartprice는 한 호출당 output2 최대 100 바만 반환
+  //  → 월봉 10이평(~220영업일 필요) 위해 여러 페이지를 **병렬**로 호출.
+  //  [2026-04-23] 직렬 페이지네이션은 종목당 900ms+ 소요되어 100종목 스캔 시 22s 데드라인 초과.
+  //  페이지들의 date 범위는 서로 독립적이므로 Promise.all로 동시 호출 가능.
+  //  중복되는 날짜는 seenDates로 중복 제거. 3페이지 × ~100바 = 최대 ~300바 수집.
+
+  const PAGE_DAYS = 150   // 캘린더 일수 — 영업일 ~100개에 해당
+  // 3페이지 병렬 = 최근 ~450일(~15개월) 커버 — 월봉 10이평 충분 확보.
+  //  호출부는 동시성을 제어해 한 번에 너무 많은 KIS 요청이 몰리지 않게 할 것
+  //  (예: radar/scan batch=3, quant scan batch=4).
+  const PAGES     = 3
+  const today = new Date()
+
+  // 페이지별 [startDate, endDate] 생성 — 각 페이지가 서로 겹치지 않게 구간 분할
+  const ranges: Array<{ start: Date; end: Date }> = []
+  for (let p = 0; p < PAGES; p++) {
+    const end = new Date(today); end.setDate(end.getDate() - p * PAGE_DAYS)
+    const start = new Date(end); start.setDate(start.getDate() - PAGE_DAYS)
+    ranges.push({ start, end })
+  }
+
+  type KisResp = {
+    output2: Array<{
+      stck_bsop_date: string
+      stck_clpr: string
+      stck_oprc?: string
+      stck_hgpr?: string
+      acml_vol: string
+    }>
+    rt_cd: string
+  }
+
+  const fetchPage = (start: Date, end: Date): Promise<KisResp | null> =>
+    kisGet<KisResp>(
+      env,
+      '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
+      'FHKST03010100',
+      {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD:         stockCode,
+        FID_INPUT_DATE_1:       fmt(start),
+        FID_INPUT_DATE_2:       fmt(end),
+        FID_PERIOD_DIV_CODE:    'D',
+        FID_ORG_ADJ_PRC:        '1',    // 수정주가 — CLAUDE.md 원칙 1 (변경 금지)
+      }
+    ).catch(() => null)
+
+  const pages = await Promise.all(ranges.map(r => fetchPage(r.start, r.end)))
+
+  const collected: KisDailyBar[] = []
+  const seenDates = new Set<string>()
+  for (const res of pages) {
+    if (!res || res.rt_cd !== '0' || !Array.isArray(res.output2)) continue
+    for (const r of res.output2) {
+      if (!r.stck_bsop_date || !r.stck_clpr) continue
+      if (seenDates.has(r.stck_bsop_date)) continue
+      seenDates.add(r.stck_bsop_date)
+
+      const closeNum = parseInt(r.stck_clpr, 10)
+      if (!isFinite(closeNum) || closeNum <= 0) continue
+      const open = r.stck_oprc ? parseInt(r.stck_oprc, 10) : 0
+      const high = r.stck_hgpr ? parseInt(r.stck_hgpr, 10) : 0
+      const bar: KisDailyBar = {
+        date:   r.stck_bsop_date,
+        close:  closeNum,
+        volume: parseInt(r.acml_vol, 10) || 0,
+      }
+      if (open > 0) bar.open = open
+      if (high > 0) bar.high = high
+      collected.push(bar)
+    }
+  }
+
+  // 오름차순(과거→현재) 정렬
+  collected.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+  return collected
+}
+
+// ───────────────────────────────────────────────────
 // 거래대금 순위 (국내 주식)
 // ───────────────────────────────────────────────────
 export interface KisVolumeRankItem {

@@ -4,14 +4,20 @@ import indexHtml from '../public/index.html'
 import {
   isKisConfigured, getKisToken,
   fetchKisDomesticPrice, fetchKisDomesticMonthly, fetchKisDomesticWeekly,
-  fetchKisVolumeRank,
+  fetchKisDomesticDaily, fetchKisVolumeRank,
   calcMa10FromBars, calcWeeklyMaFromBars,
   type KisEnv, type KisVolumeRankItem
 } from './kis_api'
 import {
   fetchUpbitPrice, fetchUpbitMonthlyCandles, fetchUpbitWeeklyCandles,
-  calcCoinMa10, calcCoinMa10Weekly,
+  fetchUpbitDailyCandles, calcCoinMa10, calcCoinMa10Weekly,
 } from './utils/upbit_api'
+import {
+  resampleDailyToMonthly, resampleDailyToWeekly, calcMa10, calcMa20,
+  computeHybridVolMetrics, scoreHybridVolume,
+  buildPullbackScore,
+  type DailyBar, type HybridVolMetrics, type PullbackScoreResult,
+} from './utils/daily_resample'
 import {
   calculateWeightedAvg, calculate10SMA, calculateSMAPrev, calculateProfitAndLoss,
 } from './utils/financeSkills'
@@ -1053,6 +1059,123 @@ app.get('/api/exchange-rate', async (c) => {
   return c.json({ usdKrw: rate, updatedAt: new Date().toISOString() })
 })
 
+// ───────────────────────────────────────────────────
+// Yahoo Finance 일봉 데이터 조회 (퀀트 스캔용 — 종목당 1회 호출)
+// 3년치 일봉을 1번에 받아 메모리에서 주봉/월봉으로 자체 재가공하기 위함.
+// 수정주가(adjclose) 우선, 없으면 quote.close 폴백 (CLAUDE.md 원칙 1).
+// ───────────────────────────────────────────────────
+async function fetchYahooDailyBars(yhTicker: string): Promise<DailyBar[]> {
+  // 1차 시도 (주어진 거래소 suffix 그대로)
+  const primary = await _fetchYahooDailyBarsOnce(yhTicker)
+  if (primary.length > 0) return primary
+
+  // [2026-04-23] KOSDAQ 폴백: `.KS`로 조회해 빈 응답이면 `.KQ`로 재시도.
+  //  inferTicker는 6자리 한국 코드에 무조건 `.KS`를 붙이는데, 기가레인·SPAC·일부 ETF 등
+  //  KOSDAQ 종목은 이 경로로 매번 404/empty → yahoo_fail로 떨어지던 문제.
+  //  기존 `/api/price`, `fetchMa10Data`에는 `.KS`/`.KQ` 동시 조회 로직이 있었지만,
+  //  눌림목 스캔 경로의 `fetchYahooDailyBars`에는 누락되어 있었음.
+  if (/\.KS$/i.test(yhTicker)) {
+    const kqTicker = yhTicker.slice(0, -3) + '.KQ'
+    const fallback = await _fetchYahooDailyBarsOnce(kqTicker)
+    if (fallback.length > 0) return fallback
+  }
+  // 반대 방향은 거의 일어나지 않지만 방어적으로 추가 (.KQ로 들어왔는데 실제 KOSPI인 경우)
+  if (/\.KQ$/i.test(yhTicker)) {
+    const ksTicker = yhTicker.slice(0, -3) + '.KS'
+    const fallback = await _fetchYahooDailyBarsOnce(ksTicker)
+    if (fallback.length > 0) return fallback
+  }
+  return []
+}
+
+async function _fetchYahooDailyBarsOnce(yhTicker: string): Promise<DailyBar[]> {
+  // Cloudflare Workers IP가 query1/query2에서 자주 429/403로 차단됨.
+  //  [2026-04-23 최적화] 기존 직렬 fallback → 병렬 race 로 변경.
+  //  · 한쪽이 차단되어 느리게 timeout 되는 동안 다른 쪽이 먼저 응답 → 실패 retry 대기 제거
+  //  · range 3y → 2y 축소: 월봉 10이평(~220일), 주봉 10이평(~70일), 20일 고점 계산에 충분
+  //    payload 33% 감소로 전송 속도 개선 + IP 차단 트리거 감소.
+  const endpoints = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yhTicker)}?interval=1d&range=2y`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yhTicker)}?interval=1d&range=2y`,
+  ]
+  // 브라우저 모방 UA — 동일 UA 연속 요청 차단 가능성 ↓
+  const UAs = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
+  ]
+  // 두 엔드포인트를 동시 호출 → 먼저 유효 데이터를 반환하는 쪽을 채택.
+  //  Promise.any는 reject가 아닌 "empty array resolve"를 구분 못하므로, 성공 조건을
+  //  resolve 내부에서 필터링: 빈 배열이면 reject로 변환해 Promise.any가 넘어가게 함.
+  try {
+    const result = await Promise.any(endpoints.map(async (url) => {
+      const bars = await _fetchYahooOnce(url, UAs[Math.floor(Math.random() * UAs.length)])
+      if (bars.length === 0) throw new Error('empty')
+      return bars
+    }))
+    return result
+  } catch (_) { return [] }
+}
+
+async function _fetchYahooOnce(url: string, ua: string): Promise<DailyBar[]> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': ua,
+        'Accept': 'application/json',
+      }
+    })
+    if (!res.ok) return []
+    const json = await res.json() as {
+      chart?: { result?: Array<{
+        timestamp?: number[]
+        indicators?: {
+          adjclose?: Array<{ adjclose?: number[] }>
+          quote?: Array<{ close?: number[]; volume?: number[]; open?: number[]; high?: number[] }>
+        }
+      }>; error?: unknown }
+    }
+    const r = json?.chart?.result?.[0]
+    if (!r) return []
+    const ts      = r.timestamp ?? []
+    const adjClose = r.indicators?.adjclose?.[0]?.adjclose ?? []
+    const close    = r.indicators?.quote?.[0]?.close ?? []
+    const opens    = r.indicators?.quote?.[0]?.open  ?? []
+    const highs    = r.indicators?.quote?.[0]?.high  ?? []
+    const volumes  = r.indicators?.quote?.[0]?.volume ?? []
+
+    // 수정주가 비율 — open/high는 원주가로 들어오므로 adjClose/close 비율로 보정
+    const out: DailyBar[] = []
+    for (let i = 0; i < ts.length; i++) {
+      const t = ts[i]
+      const c = (adjClose[i] ?? close[i])
+      if (t == null || c == null || c <= 0) continue
+      const d = new Date(t * 1000)
+      const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+      const vol = volumes[i]
+      // open/high 수정주가 보정: 원주가 close 대비 수정주가 비율을 그대로 적용
+      const rawClose = close[i]
+      const adjRatio = (rawClose != null && rawClose > 0 && adjClose[i] != null)
+        ? (adjClose[i] as number) / rawClose
+        : 1
+      const rawOpen  = opens[i]
+      const rawHigh  = highs[i]
+      const openAdj  = (rawOpen != null && rawOpen > 0) ? rawOpen * adjRatio : undefined
+      const highAdj  = (rawHigh != null && rawHigh > 0) ? rawHigh * adjRatio : undefined
+      out.push({
+        date,
+        close: c,
+        volume: (vol != null && vol > 0) ? vol : 0,
+        ...(openAdj != null ? { open: openAdj } : {}),
+        ...(highAdj != null ? { high: highAdj } : {}),
+      })
+    }
+    // Yahoo는 이미 오름차순이지만 안전하게 한 번 더 정렬
+    out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    return out
+  } catch (_) { return [] }
+}
+
 // ── 10개월 월봉 종가 + SMA10 ──────────────────────
 // 캐시 TTL: 1시간 (월봉 데이터는 자주 변하지 않음)
 const CACHE_TTL_MA10 = 60 * 60 * 1000
@@ -1749,73 +1872,140 @@ app.delete('/api/radar/watchlist', async (c) => {
 
 // ── 레이더 10이평선 스캔 ──────────────────────────
 // body: { tickers: string[], scores?: boolean }
-// KR 종목: KIS 월봉 데이터 우선, 실패 시 Yahoo Finance 폴백
-// US 종목: Yahoo Finance
-// scores=true 시: 주봉+월봉 병렬 조회 → A/B/C/D 4가지 퀀트 점수 추가 반환
+//
+// scores=false (신호만): 기존 월봉 API 경로 유지 (가볍게 10이평선 돌파 신호만)
+// scores=true  (상세 퀀트): 일봉 1회 fetch → 공용 calcQuantScoreFromDaily 로
+//                           `/api/quant/top50` / `/api/coin-top50` 과 동일 수식의
+//                           A/B/C/D 100점 반환. 일간 방아쇠(15) + 롤링 5일(15) 하이브리드.
 app.post('/api/radar/scan', async (c) => {
-  let body: { tickers?: string[]; scores?: boolean }
+  let body: { tickers?: string[]; scores?: boolean; scanMode?: string }
   try { body = await c.req.json() } catch (_) { return c.json({ error: '잘못된 JSON' }, 400) }
   const tickers = body?.tickers
   if (!Array.isArray(tickers) || tickers.length === 0) return c.json({ error: 'tickers 배열 필요' }, 400)
   if (tickers.length > 50) return c.json({ error: '최대 50개까지 가능합니다' }, 400)
 
   const withScores = !!body?.scores
+  // [듀얼모드] scanMode=breakout(기본) | pullback
+  // 기본은 기존 돌파 로직 100% 보존, pullback은 응답에 스텁 필드 추가 (점수식은 추후 구현)
+  const scanMode = body?.scanMode === 'pullback' ? 'pullback' : 'breakout'
   const kisEnv = c.env as unknown as KisEnv
   const kisReady = isKisConfigured(kisEnv)
   const usdKrw = await getUsdKrw()
 
   type ScanItem = {
-    ticker: string; name?: string; ma10: number | null;
-    curPrice: number | null; signal: 'bull' | 'bear' | null; source: string;
-    score?: number; scoreA?: number; scoreB?: number; scoreC?: number; scoreD?: number;
-    gapPct?: number; volRatio?: number; weeklySlope?: number; monthlySlope?: number;
-    ma10w?: number | null;
+    ticker: string; name?: string; ma10: number | null
+    curPrice: number | null; signal: 'bull' | 'bear' | null; source: string
+    score?: number; scoreA?: number; scoreB?: number
+    scoreBDaily?: number; scoreBWeekly?: number
+    scoreC?: number; scoreD?: number
+    gapPct?: number; volRatio?: number
+    dailyVolRatio?: number; weeklyVolRatio?: number
+    weeklySlope?: number; monthlySlope?: number
+    ma10w?: number | null
+    // 눌림목 모드 전용 (scores=true + scanMode='pullback' 시에만 채워짐)
+    pullback?: PullbackScoreResult | null
   }
 
-  // 동시 요청 5개로 제한 (KIS API 속도 제한 배려)
+  // 동시 요청 3개로 제한 — KIS 페이지네이션(종목당 3 page 병렬)과 곱해 최대 9 동시 KIS 호출 → 20 TPS 안전선.
+  //  [2026-04-23] batch=5일 때 15개 동시 KIS 호출 → 일부 종목 page가 누락되어 score=null로 떨어짐.
   const results: ScanItem[] = []
-
   const queue = [...tickers]
+
   while (queue.length > 0) {
-    const batch = queue.splice(0, 5)
+    const batch = queue.splice(0, 3)
     const batchResults = await Promise.all(batch.map(async (raw): Promise<ScanItem> => {
       const { ticker, isKorean, isCoin, yhTicker } = inferTicker(raw)
       const cleanCode = ticker.slice(0, 6)
 
-      // ── 코인: 업비트 기준 ──
-      if (isCoin) {
-        if (withScores) {
-          // 월봉 + 주봉 병렬 조회 → 점수 계산
-          const [monthlyBars, weeklyBars] = await Promise.all([
-            fetchUpbitMonthlyCandles(ticker, 13),
-            fetchUpbitWeeklyCandles(ticker, 42),
-          ])
-          if (monthlyBars.length < 5) return { ticker: raw, ma10: null, curPrice: null, signal: null, source: 'upbit_fail' }
-          const monthly = calcCoinMa10(monthlyBars)
-          const weekly  = weeklyBars.length >= 10 ? calcCoinMa10Weekly(weeklyBars) : null
-          const priceData = await fetchUpbitPrice(ticker)
-          const rawClose = priceData?.price ?? weekly?.latestClose ?? monthly.currentMonthClose
-          let score = 0, scoreA = 0, scoreB = 0, scoreC = 0, scoreD = 0
-          let gapPct = 0, volRatio = 0, weeklySlope = 0, monthlySlope = 0
-          if (weekly?.ma10w) {
-            gapPct    = rawClose && weekly.ma10w ? (rawClose - weekly.ma10w) / weekly.ma10w * 100 : 0
-            volRatio  = weekly.volumeW && weekly.volumeWAvg10 && weekly.volumeWAvg10 > 0 ? weekly.volumeW / weekly.volumeWAvg10 : 0
-            weeklySlope = weekly.ma10wPrev && weekly.ma10wPrev > 0 ? (weekly.ma10w - weekly.ma10wPrev) / weekly.ma10wPrev * 100 : 0
-            monthlySlope = monthly.smaPrev && monthly.smaPrev > 0 && monthly.ma10 ? (monthly.ma10 - monthly.smaPrev) / monthly.smaPrev * 100 : 0
-            scoreA = scoreQuantGap(gapPct); scoreB = scoreQuantVol(volRatio)
-            scoreC = scoreQuantWeeklySlope(weeklySlope); scoreD = scoreQuantMonthlySlope(monthlySlope)
-            score = scoreA + scoreB + scoreC + scoreD
+      // ══════════════════════════════════════════════════
+      // [A] scores=true → 일봉 1회 fetch + 공용 퀀트 점수 계산
+      // ══════════════════════════════════════════════════
+      if (withScores) {
+        try {
+          let dailyBars: DailyBar[] = []
+          let source = ''
+          let name: string | undefined
+
+          if (isCoin) {
+            dailyBars = await fetchUpbitDailyCandles(ticker, 400)
+            source = 'upbit'
+          } else if (isKorean && kisReady) {
+            const kisBars = await fetchKisDomesticDaily(kisEnv, cleanCode)
+            // KIS 병렬 페이지네이션이 성공적으로 220바 이상을 수집했을 때만 채택.
+            //  월봉 10이평 resample(=최근 10개월×20영업일) 하려면 이 정도가 최소.
+            //  미달 시 아래에서 Yahoo로 폴백 (Yahoo는 1회 호출에 3년치 = 750바).
+            //  [2026-04-23] 기존 임계치 60은 calcQuantScoreFromDaily의 실제 요구량(~220) 대비 과소.
+            //  → 100바만 받은 KIS 응답이 채택돼 scored=null이 되어 score 필드가 사라지던 버그 해결.
+            if (kisBars.length >= 220) {
+              dailyBars = kisBars.map(b => {
+                const d: DailyBar = { date: b.date, close: b.close, volume: b.volume }
+                if (b.open != null && b.open > 0) d.open = b.open
+                if (b.high != null && b.high > 0) d.high = b.high
+                return d
+              })
+              source = 'kis'
+            }
           }
+
+          // KR KIS 실패/데이터 부족 or 미국 주식 → Yahoo 일봉 폴백
+          if (dailyBars.length < 220) {
+            dailyBars = await fetchYahooDailyBars(yhTicker)
+            source = source ? source + '_yahoo' : 'yahoo'
+          }
+
+          if (dailyBars.length < 60) {
+            return { ticker: raw, name, ma10: null, curPrice: null, signal: null, source: source + '_fail' }
+          }
+
+          const scored = calcQuantScoreFromDaily(dailyBars, isCoin)
+          const toKrw = (isKorean || isCoin) ? 1 : usdKrw
+
+          if (!scored) {
+            const rawClose = dailyBars[dailyBars.length - 1].close
+            return {
+              ticker: raw, name,
+              ma10: null,
+              curPrice: rawClose ? Math.round(rawClose * toKrw) : null,
+              signal: null, source,
+            }
+          }
+
+          // 눌림목 모드일 때만 추가 계산 — 돌파 응답은 그대로 유지
+          const pullback = scanMode === 'pullback'
+            ? buildPullbackScore(dailyBars, isCoin)
+            : null
+
           return {
-            ticker: raw, name: priceData?.name,
-            ma10: monthly.ma10, curPrice: rawClose, signal: monthly.signal, source: 'upbit',
-            score, scoreA, scoreB, scoreC, scoreD,
-            gapPct: parseFloat(gapPct.toFixed(2)), volRatio: parseFloat(volRatio.toFixed(2)),
-            weeklySlope: parseFloat(weeklySlope.toFixed(3)), monthlySlope: parseFloat(monthlySlope.toFixed(3)),
-            ma10w: weekly?.ma10w ? Math.round(weekly.ma10w) : null,
+            ticker: raw, name,
+            ma10:     Math.round(scored.ma10m * toKrw),
+            curPrice: Math.round(scored.rawClose * toKrw),
+            signal:   scored.rawClose > scored.ma10m ? 'bull' : 'bear',
+            source,
+            score:        scored.score,
+            scoreA:       scored.scoreA,
+            scoreB:       scored.scoreB,
+            scoreBDaily:  scored.scoreBDaily,
+            scoreBWeekly: scored.scoreBWeekly,
+            scoreC: scored.scoreC,
+            scoreD: scored.scoreD,
+            gapPct:         parseFloat(scored.gapPct.toFixed(2)),
+            volRatio:       parseFloat(scored.weeklyVolRatio.toFixed(2)),  // 하위호환
+            dailyVolRatio:  parseFloat(scored.dailyVolRatio.toFixed(2)),
+            weeklyVolRatio: parseFloat(scored.weeklyVolRatio.toFixed(2)),
+            weeklySlope:    parseFloat(scored.weeklySlope.toFixed(3)),
+            monthlySlope:   parseFloat(scored.monthlySlope.toFixed(3)),
+            ma10w:          Math.round(scored.ma10w * toKrw),
+            pullback,
           }
+        } catch (_) {
+          return { ticker: raw, ma10: null, curPrice: null, signal: null, source: 'error' }
         }
-        // 점수 없이 신호만
+      }
+
+      // ══════════════════════════════════════════════════
+      // [B] scores=false → 신호 전용 경량 경로 (월봉 API 유지)
+      // ══════════════════════════════════════════════════
+      if (isCoin) {
         const bars = await fetchUpbitMonthlyCandles(ticker, 13)
         if (bars.length === 0) return { ticker: raw, ma10: null, curPrice: null, signal: null, source: 'upbit_fail' }
         const { ma10, currentMonthClose, signal } = calcCoinMa10(bars)
@@ -1823,39 +2013,6 @@ app.post('/api/radar/scan', async (c) => {
         return { ticker: raw, name: priceData?.name, ma10, curPrice: priceData?.price ?? currentMonthClose, signal, source: 'upbit' }
       }
 
-      // ── 점수 포함 스캔: Yahoo 월봉+주봉 병렬 ──
-      if (withScores) {
-        const [monthly, weekly] = await Promise.all([
-          fetchMa10Data(yhTicker),
-          fetchMaWeeklyData(yhTicker),
-        ])
-        if (!monthly) return { ticker: raw, ma10: null, curPrice: null, signal: null, source: 'yahoo_fail' }
-        const toKrw = isKorean ? 1 : usdKrw
-        const rawClose = weekly?.latestClose ?? monthly.currentMonthClose ?? 0
-        let score = 0, scoreA = 0, scoreB = 0, scoreC = 0, scoreD = 0
-        let gapPct = 0, volRatio = 0, weeklySlope = 0, monthlySlope = 0
-        if (weekly?.ma10w) {
-          gapPct    = rawClose && weekly.ma10w ? (rawClose - weekly.ma10w) / weekly.ma10w * 100 : 0
-          volRatio  = weekly.volumeW && weekly.volumeWAvg10 && weekly.volumeWAvg10 > 0 ? weekly.volumeW / weekly.volumeWAvg10 : 0
-          weeklySlope = weekly.ma10wPrev && weekly.ma10wPrev > 0 ? (weekly.ma10w - weekly.ma10wPrev) / weekly.ma10wPrev * 100 : 0
-          monthlySlope = monthly.smaPrev && monthly.smaPrev > 0 && monthly.ma10 ? (monthly.ma10 - monthly.smaPrev) / monthly.smaPrev * 100 : 0
-          scoreA = scoreQuantGap(gapPct); scoreB = scoreQuantVol(volRatio)
-          scoreC = scoreQuantWeeklySlope(weeklySlope); scoreD = scoreQuantMonthlySlope(monthlySlope)
-          score = scoreA + scoreB + scoreC + scoreD
-        }
-        return {
-          ticker: raw,
-          ma10:     monthly.ma10     != null ? Math.round(monthly.ma10 * toKrw) : null,
-          curPrice: rawClose ? Math.round(rawClose * toKrw) : null,
-          signal:   monthly.signal, source: 'yahoo',
-          score, scoreA, scoreB, scoreC, scoreD,
-          gapPct: parseFloat(gapPct.toFixed(2)), volRatio: parseFloat(volRatio.toFixed(2)),
-          weeklySlope: parseFloat(weeklySlope.toFixed(3)), monthlySlope: parseFloat(monthlySlope.toFixed(3)),
-          ma10w: weekly?.ma10w != null ? Math.round(weekly.ma10w * toKrw) : null,
-        }
-      }
-
-      // ── KR 종목: KIS 우선 (신호만) ──
       if (isKorean && kisReady) {
         const bars = await fetchKisDomesticMonthly(kisEnv, cleanCode)
         if (bars.length >= 5) {
@@ -1865,7 +2022,6 @@ app.post('/api/radar/scan', async (c) => {
         }
       }
 
-      // ── Yahoo Finance 폴백 (KR 실패 or US, 신호만) ──
       const data = await fetchMa10Data(yhTicker)
       if (!data) return { ticker: raw, ma10: null, curPrice: null, signal: null, source: 'yahoo_fail' }
       const toKrw = isKorean ? 1 : usdKrw
@@ -1879,7 +2035,57 @@ app.post('/api/radar/scan', async (c) => {
     results.push(...batchResults)
   }
 
-  return c.json({ results, count: results.length, usdKrw, updatedAt: new Date().toISOString() })
+  // [듀얼모드] 눌림목 모드 응답 매핑:
+  //  - 기존 프론트 호환 필드(pullbackScore / supportGapPct / prevDayVolRatio / turnaround)
+  //  - 스펙 요구 필드(totalScore / supportDisparity / supportType / yesterdayVolRatio / turnaroundState / badge)
+  // 필터 탈락 종목은 totalScore=0으로 내려가 자연스럽게 하위권 정렬됨.
+  let outResults: any[] = results
+  if (scanMode === 'pullback') {
+    outResults = results.map((r: ScanItem) => {
+      const p = r.pullback
+      if (!p) {
+        return {
+          ...r, pullback: undefined,
+          pullbackScore: null, totalScore: null,
+          supportGapPct: null, supportDisparity: null, supportType: null,
+          prevDayVolRatio: null, yesterdayVolRatio: null,
+          turnaround: null, turnaroundState: null,
+          badge: null, filterPassed: null, filterReason: null,
+        }
+      }
+      const supportPct = parseFloat(p.supportDisparityPct.toFixed(2))
+      const yVolRatio  = p.yesterdayVolRatio != null ? parseFloat(p.yesterdayVolRatio.toFixed(2)) : null
+      return {
+        ...r, pullback: undefined,
+        // 레거시 호환
+        pullbackScore:   p.totalScore,
+        supportGapPct:   supportPct,
+        prevDayVolRatio: yVolRatio,
+        turnaround:      p.turnaroundState.startsWith('양봉') ? '양봉' : (p.turnaroundState === '음봉 하락' ? '음봉' : null),
+        // 스펙 정식 필드
+        totalScore:        p.totalScore,
+        supportDisparity:  (supportPct >= 0 ? '+' : '') + supportPct.toFixed(1) + '%',
+        supportType:       p.supportType,
+        yesterdayVolRatio: yVolRatio != null ? yVolRatio.toFixed(2) + 'x' : null,
+        turnaroundState:   p.turnaroundState,
+        badge:             p.badge,
+        filterPassed:      p.filterPassed,
+        filterReason:      p.filterReason,
+        // 세부 디버그 필드
+        supportScore:        p.supportScore,
+        turnaroundScore:     p.turnaroundScore,
+        volumeDroughtScore:  p.volumeDroughtScore,
+      }
+    })
+  } else {
+    // 돌파 모드: 눌림목 계산 필드 제거 (프론트 응답 크기 절약)
+    outResults = results.map((r: ScanItem) => {
+      const { pullback: _p, ...rest } = r
+      return rest
+    })
+  }
+
+  return c.json({ results: outResults, count: outResults.length, usdKrw, scanMode, updatedAt: new Date().toISOString() })
 })
 
 // ── KIS 연결 상태 확인 ────────────────────────────
@@ -1900,21 +2106,39 @@ app.get('/api/kis/status', async (c) => {
 // ═══════════════════════════════════════════════════
 // 상승 초기 퀀트 TOP 50 — 절대 필터 + 4가지 스코어링
 // ═══════════════════════════════════════════════════
-const QUANT_TOP50_KV_KEY = 'quant_top50_v2'
-const QUANT_TTL_MS       = 1 * 60 * 60 * 1000   // 1시간 캐시
+// v3 (2026-04): QuantStockResult에 scoreBDaily/scoreBWeekly/dailyVolRatio/weeklyVolRatio 추가.
+// 기존 v2 캐시는 자동 만료(4시간) 대기. 새 키 신설해 이전 스키마와 혼재 방지.
+const QUANT_TOP50_KV_KEY = 'quant_top50_v3'
+const QUANT_TTL_MS       = 24 * 60 * 60 * 1000   // 24시간 캐시 (하루 1회 스캔 전제)
 
 interface QuantStockResult {
   rank:         number
   ticker:       string
   name:         string
   price:        number          // 현재가 (KRW 환산)
-  score:        number          // 총점 (0–100)
+  score:        number          // 총점 (0–100) — 돌파 모드
   scoreA:       number          // A. 이격도 점수 (30점)
-  scoreB:       number          // B. 거래량 점수 (30점)
+  scoreB:       number          // B. 하이브리드 거래량 점수 (30점 = 일간 15 + 롤링 15)
+  scoreBDaily:  number          // B 분할: 일간 방아쇠 점수 (0-15)
+  scoreBWeekly: number          // B 분할: 롤링 주간 검증 점수 (0-15)
   scoreC:       number          // C. 주봉 기울기 점수 (20점)
   scoreD:       number          // D. 월봉 기울기 점수 (20점)
   gapPct:       number          // (P – SMA10W) / SMA10W × 100
-  volRatio:     number          // volW / volWAvg10
+  // ─ 눌림목 모드 필드 (buildQuantTop50에서 함께 계산, 캐시에 동봉) ─
+  pullbackScore?:       number | null    // 눌림목 총점 (0–100), 필터 탈락 시 0
+  pullbackFilterPassed?: boolean
+  supportGapPct?:       number | null    // 지지선 이격률 (%)
+  supportType?:         string | null    // '일봉 20선' | '주봉 10선'
+  prevDayVolRatio?:     number | null    // 어제 거래량 / 직전 20일 평균
+  turnaround?:          string | null    // '양봉' | '음봉' | null (레거시)
+  turnaroundState?:     string | null    // '양봉 반등' | '양봉 횡보' | '음봉 하락'
+  supportDisparity?:    string | null    // UI 표시용 "+1.2%"
+  yesterdayVolRatio?:   string | null    // UI 표시용 "0.4x"
+  badge?:               string | null    // '🎯 반등 타점 포착' (85점 이상)
+  /** @deprecated 하위호환용 — 주봉 거래량/10주평균. 새 지표는 dailyVolRatio, weeklyVolRatio 사용 */
+  volRatio:     number
+  dailyVolRatio:  number        // 오늘 거래량 / 직전 20영업일 평균
+  weeklyVolRatio: number        // 롤링 N일(주식=5, 코인=7) 누적 / 10주 평균 주간 거래량
   weeklySlope:  number          // (SMA10W – SMA10WPrev) / SMA10WPrev × 100
   monthlySlope: number          // (SMA10M – SMA10MPrev) / SMA10MPrev × 100
   market:       'us' | 'kr'
@@ -1943,13 +2167,8 @@ function scoreQuantGap(pct: number): number {
   return Math.round(15 * (15 - pct) / 7)                       // 8%→15, 15%→0
 }
 
-// B. 주간 거래량 폭발 점수 (0-30점, 1점 단위 선형)
-// 1.0x 미만: 0점, 1.0x→5점(하한 고정), 2.0x 이상→30점(상한 고정)
-function scoreQuantVol(ratio: number): number {
-  if (ratio < 1.0) return 0
-  if (ratio >= 2.0) return 30
-  return Math.round(5 + (ratio - 1.0) / 1.0 * 25)   // 1.0x=5, 2.0x=30 선형
-}
+// B. 거래량 점수는 하이브리드 체계로 전환됨 — `scoreHybridVolume` 사용
+// (구 `scoreQuantVol`은 제거됨. 모든 레이더 엔드포인트가 일간 방아쇠 15 + 롤링 5일 15 = 30점 체계로 통일)
 
 // C. 주봉 10이평선 단기 기울기 점수 (0-20점, 1점 단위 선형)
 // 0% 이하: 0점, 0%초과→최소 1점, 1.0% 이상→20점 상한
@@ -1967,22 +2186,132 @@ function scoreQuantMonthlySlope(pct: number): number {
   return Math.max(1, Math.round(pct / 0.5 * 20))     // 0→20 선형
 }
 
+// ═══════════════════════════════════════════════════
+// 공용 퀀트 점수 계산기 — 일봉 배열 → A/B/C/D 100점
+// ───────────────────────────────────────────────────
+// 모든 레이더/퀀트 엔드포인트(`/api/quant/top50`, `/api/coin-top50`,
+// `/api/radar/scan`)가 이 함수를 공유해 점수 계산 수식을 단일화합니다.
+//
+// 반환 필드:
+//   rawClose / ma10m / ma10w / ma20w : 가공 지표 (KRW 환산 전 원본)
+//   scoreA / scoreB / scoreBDaily / scoreBWeekly / scoreC / scoreD / score : 점수
+//   gapPct / dailyVolRatio / weeklyVolRatio / weeklySlope / monthlySlope : 세부 수치
+//
+// 절대 필터(P>SMA10M 등)는 적용하지 않습니다. 필터가 필요한 호출 측
+// (`buildQuantTop50`)은 반환값을 검사한 뒤 별도 판단합니다.
+// 데이터가 부족해 계산이 불가능한 경우(월봉 <10 / 주봉 <11 / 현재가 0)에만 null.
+// ═══════════════════════════════════════════════════
+interface QuantScoreResult {
+  rawClose: number
+  ma10m: number
+  ma10mPrv: number | null
+  ma10w: number
+  ma10wPrv: number | null
+  ma20w: number
+  scoreA: number
+  scoreB: number
+  scoreBDaily: number
+  scoreBWeekly: number
+  scoreC: number
+  scoreD: number
+  score: number
+  gapPct: number
+  dailyVolRatio: number
+  weeklyVolRatio: number
+  weeklySlope: number
+  monthlySlope: number
+  hybridVol: HybridVolMetrics
+}
+
+function calcQuantScoreFromDaily(
+  dailyBars: DailyBar[],
+  isCoin: boolean
+): QuantScoreResult | null {
+  if (dailyBars.length < 60) return null
+
+  // 월봉 10이평 + 전월 10이평
+  const monthlyBars = resampleDailyToMonthly(dailyBars)
+  if (monthlyBars.length < 10) return null
+  const { ma10: ma10m, ma10Prev: ma10mPrv } = calcMa10(monthlyBars.map(b => b.close))
+  if (ma10m == null) return null
+
+  // 주봉 10이평 + 전주 10이평 + 20이평
+  const weeklyBars = resampleDailyToWeekly(dailyBars)
+  if (weeklyBars.length < 11) return null
+  const weeklyCloses = weeklyBars.map(b => b.close)
+  const { ma10: ma10w, ma10Prev: ma10wPrv } = calcMa10(weeklyCloses)
+  const ma20w = calcMa20(weeklyCloses)
+  if (ma10w == null || ma20w == null) return null
+
+  // 현재가 = 가장 최근 일봉 종가 (가장 실시간)
+  const rawClose = dailyBars[dailyBars.length - 1].close
+  if (!rawClose) return null
+
+  // 하이브리드 거래량 지표 (일간 방아쇠 + 롤링 N영업일)
+  const hybridVol = computeHybridVolMetrics(dailyBars, isCoin)
+  const bScore    = scoreHybridVolume(hybridVol)
+
+  // 비율 기반 스코어링 (통화·데이터 소스 무관 동일 결과)
+  const gapPct     = (rawClose - ma10w) / ma10w * 100
+  const weekSlope  = (ma10wPrv && ma10wPrv > 0) ? (ma10w - ma10wPrv) / ma10wPrv * 100 : 0
+  const monthSlope = (ma10mPrv && ma10mPrv > 0) ? (ma10m - ma10mPrv) / ma10mPrv * 100 : 0
+
+  const scoreA = scoreQuantGap(gapPct)
+  const scoreC = scoreQuantWeeklySlope(weekSlope)
+  const scoreD = scoreQuantMonthlySlope(monthSlope)
+  const score  = scoreA + bScore.total + scoreC + scoreD
+
+  return {
+    rawClose,
+    ma10m, ma10mPrv, ma10w, ma10wPrv, ma20w,
+    scoreA,
+    scoreB:       bScore.total,
+    scoreBDaily:  bScore.daily,
+    scoreBWeekly: bScore.weekly,
+    scoreC, scoreD, score,
+    gapPct,
+    dailyVolRatio:  hybridVol.dailyVolRatio,
+    weeklyVolRatio: hybridVol.rollingWindowRatio,
+    weeklySlope:  weekSlope,
+    monthlySlope: monthSlope,
+    hybridVol,
+  }
+}
+
 // ── 종목별 MA 데이터 KV 캐시 ─────────────────────────
 // Cloudflare Workers는 매 요청마다 인메모리 캐시가 리셋될 수 있으므로,
-// 한번 성공한 종목의 MA 데이터를 KV에 저장합니다.
+// 한번 성공한 종목의 MA 데이터 + 하이브리드 거래량 지표를 KV에 저장합니다.
 // 다음 스캔에서는 KV 캐시가 있는 종목은 API 호출을 건너뛰고,
 // API 예산을 아직 데이터가 없는 종목에 집중합니다.
-// 스캔을 반복할수록 점점 더 많은 종목이 커버됩니다.
-const QUANT_MA_CACHE_KEY = 'quant_ma_cache_v2'
-const QUANT_MA_CACHE_TTL = 6 * 60 * 60  // KV TTL 6시간
-const QUANT_MA_MAX_AGE   = 6 * 60 * 60 * 1000  // 데이터 유효기간 6시간(ms)
+// v3 (2026-04): 일봉 기반 재가공으로 전환되면서 새 필드(dailyVolRatio, weeklyVolRatio) 추가.
+// 기존 v2 캐시는 자동 만료(6시간) 대기. 병렬 사용 불가.
+// v4 (2026-04-23): 눌림목 필드까지 캐시에 저장 — 캐시 히트 시 pullback 필드가 사라지던
+//                  회귀 버그 해결. v3 캐시는 6시간 지나면 자연 만료.
+const QUANT_MA_CACHE_KEY = 'quant_ma_cache_v4'
+const QUANT_MA_CACHE_TTL = 24 * 60 * 60         // KV TTL 24시간 (하루 1회 스캔)
+const QUANT_MA_MAX_AGE   = 24 * 60 * 60 * 1000  // 데이터 유효기간 24시간(ms)
 
 interface QuantMaCacheEntry {
   rawClose: number
   ma10mRaw: number; ma10mPrv: number | null
   ma10wRaw: number; ma10wPrv: number | null
   ma20wRaw: number
-  volumeW: number | null; volumeWAvg10: number | null
+  /** @deprecated 하위 호환 필드 - 새 하이브리드 지표로 대체 */
+  volumeW?: number | null
+  /** @deprecated */
+  volumeWAvg10?: number | null
+  // 하이브리드 거래량 지표 (새 B 점수 계산용)
+  dailyVolRatio:   number
+  weeklyVolRatio:  number
+  // ─ 눌림목 스냅샷 (버그 수정용) ─
+  // 없으면 null — 다음 fresh 스캔에서 채워짐
+  pb_totalScore?:        number | null
+  pb_filterPassed?:      boolean | null
+  pb_supportGapPct?:     number | null
+  pb_supportType?:       string | null
+  pb_prevDayVolRatio?:   number | null   // 어제 거래량 비율 (숫자)
+  pb_turnaroundState?:   string | null
+  pb_badge?:             string | null
   cachedAt: number  // Date.now() 시점
 }
 type QuantMaCache = Record<string, QuantMaCacheEntry>  // { ticker → entry }
@@ -2013,8 +2342,12 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   const maCache = await loadQuantMaCache(env.CUSTOM_TICKERS)
   let _statCacheHit = 0  // KV 캐시에서 가져온 종목 수
 
-  // ① 유니버스 구성: US=SP500 Top100, KR=KIS 순위 50 + KRX 폴백 50
-  const usUniverse = SP500_TOP100.map(s => ({
+  // ① 유니버스 구성: US=SP500 Top30 (Yahoo는 Cloudflare IP 차단 심함 → 작은 세트에 집중)
+  //    KR=KIS 순위 50 + KRX 폴백 50
+  //    Top100에서 30으로 축소한 이유: Yahoo 차단율이 ~95%라 100종목 요청 중 ~95건 실패.
+  //    Top30이면 API 예산이 상위 시총에 집중돼 성공률과 스캔시간 모두 개선되고,
+  //    Top 50 리스트는 어차피 KR이 주력(시총 기준 한국 종목이 필터 통과 비율 높음).
+  const usUniverse = SP500_TOP100.slice(0, 30).map(s => ({
     name: s.name, ticker: s.ticker, market: 'us' as const,
   }))
 
@@ -2063,14 +2396,15 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   let _statSuccess = 0   // 필터 통과
 
   // ── 공통 스코어링 헬퍼 (필터 + 점수 계산) ──
-  // 코인/KR/US 모든 그룹이 동일한 절대 필터 + 스코어링 로직을 사용
+  // 코인/KR/US 모든 그룹이 동일한 절대 필터 + 하이브리드 거래량 스코어링을 사용
   function scoreStock(p: {
     ticker: string; name: string; market: 'us' | 'kr'
     isKorean: boolean
     rawClose: number
     ma10mRaw: number; ma10mPrv: number | null
     ma10wRaw: number; ma10wPrv: number | null; ma20wRaw: number
-    volumeW: number | null; volumeWAvg10: number | null
+    /** 하이브리드 거래량 지표 (일봉 배열로부터 계산된 비율 두 개) */
+    hybridVol: HybridVolMetrics
   }): QuantStockResult | null {
     const { rawClose, ma10mRaw, ma10wRaw, ma20wRaw, ma10wPrv, ma10mPrv } = p
 
@@ -2088,30 +2422,39 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
 
     // ─── 스코어링 (비율 기반 → 통화 무관, 데이터 소스와 무관하게 동작) ───
     const gapPct     = (rawClose - ma10wRaw) / ma10wRaw * 100
-    const volRatio   = (p.volumeW && p.volumeWAvg10 && p.volumeWAvg10 > 0)
-      ? p.volumeW / p.volumeWAvg10 : 0
     const weekSlope  = (ma10wPrv && ma10wPrv > 0)
       ? (ma10wRaw - ma10wPrv) / ma10wPrv * 100 : 0
     const monthSlope = (ma10mPrv && ma10mPrv > 0)
       ? (ma10mRaw - ma10mPrv) / ma10mPrv * 100 : 0
 
+    // B 점수 = 일간 방아쇠(15) + 롤링 주간 검증(15) = 총 30점
+    // 하루 반짝 상승한 테마주는 일간은 20점이어도 롤링 5일이 1배 미만 → 주간 0점
+    // 며칠 연속 자금 유입된 주도주만 양쪽 다 점수 획득
+    const hybrid = scoreHybridVolume(p.hybridVol)
+
     const scoreA = scoreQuantGap(gapPct)
-    const scoreB = scoreQuantVol(volRatio)
     const scoreC = scoreQuantWeeklySlope(weekSlope)
     const scoreD = scoreQuantMonthlySlope(monthSlope)
-    const score  = scoreA + scoreB + scoreC + scoreD
+    const score  = scoreA + hybrid.total + scoreC + scoreD
 
     const toKrw = p.isKorean ? 1 : usdKrw
     _statSuccess++
     return {
       rank: 0, ticker: p.ticker, name: p.name,
-      price:        Math.round(rawClose * toKrw),
-      score, scoreA, scoreB, scoreC, scoreD,
-      gapPct:       parseFloat(gapPct.toFixed(2)),
-      volRatio:     parseFloat(volRatio.toFixed(2)),
-      weeklySlope:  parseFloat(weekSlope.toFixed(3)),
-      monthlySlope: parseFloat(monthSlope.toFixed(3)),
-      market:       p.market,
+      price:          Math.round(rawClose * toKrw),
+      score,
+      scoreA,
+      scoreB:         hybrid.total,
+      scoreBDaily:    hybrid.daily,
+      scoreBWeekly:   hybrid.weekly,
+      scoreC, scoreD,
+      gapPct:         parseFloat(gapPct.toFixed(2)),
+      volRatio:       parseFloat(p.hybridVol.rollingWindowRatio.toFixed(2)),  // 하위 호환 (= weeklyVolRatio)
+      dailyVolRatio:  parseFloat(p.hybridVol.dailyVolRatio.toFixed(2)),
+      weeklyVolRatio: parseFloat(p.hybridVol.rollingWindowRatio.toFixed(2)),
+      weeklySlope:    parseFloat(weekSlope.toFixed(3)),
+      monthlySlope:   parseFloat(monthSlope.toFixed(3)),
+      market:         p.market,
       ma10m: Math.round(ma10mRaw * toKrw),
       ma10w: Math.round(ma10wRaw * toKrw),
     } as QuantStockResult
@@ -2124,66 +2467,179 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   // ═══════════════════════════════════════════════════
 
   // ── 공통: KV 캐시 히트 시 API 건너뛰는 헬퍼 ──
-  // 이전 스캔에서 성공한 종목의 MA 데이터를 재활용합니다.
-  // API 예산을 아직 데이터가 없는 종목에 집중할 수 있습니다.
+  // 이전 스캔에서 성공한 종목의 MA + 하이브리드 거래량 지표를 재활용합니다.
+  // 캐시에는 이미 계산된 dailyVolRatio, weeklyVolRatio 가 들어있으므로
+  // scoreStock에 넣을 HybridVolMetrics 형태로 복원해서 점수만 다시 매깁니다.
   function tryScoreFromCache(ticker: string, name: string, market: 'us' | 'kr', isKorean: boolean): QuantStockResult | null {
     const c = maCache[ticker]
     if (!c) return null
     _statCacheHit++
-    return scoreStock({
+    // 캐시된 비율 → HybridVolMetrics 복원 (원본 수치는 캐시하지 않고 비율만 저장)
+    const hybridVol: HybridVolMetrics = {
+      dailyVolRatio:     c.dailyVolRatio ?? 0,
+      rollingWindowRatio: c.weeklyVolRatio ?? 0,
+      todayVol: 0, avg20Vol: 0, rollingSum: 0, avg10WkVol: 0,  // 점수 계산에는 비율만 사용
+    }
+    const scored = scoreStock({
       ticker, name, market, isKorean,
       rawClose: c.rawClose, ma10mRaw: c.ma10mRaw, ma10mPrv: c.ma10mPrv,
       ma10wRaw: c.ma10wRaw, ma10wPrv: c.ma10wPrv, ma20wRaw: c.ma20wRaw,
-      volumeW: c.volumeW, volumeWAvg10: c.volumeWAvg10,
+      hybridVol,
     })
+    if (!scored) return null
+    // 캐시에 저장된 눌림목 스냅샷이 있으면 복원 (회귀 버그 수정)
+    //  - 캐시 히트 경로는 일봉 원본이 없어 buildPullbackScore 재계산 불가
+    //  - 따라서 fresh 스캔 시 계산된 필드를 캐시에 함께 저장해 두고, 히트 시 그대로 복원
+    if (c.pb_totalScore != null) {
+      scored.pullbackScore        = c.pb_totalScore
+      scored.pullbackFilterPassed = c.pb_filterPassed ?? undefined
+      scored.supportGapPct        = c.pb_supportGapPct ?? null
+      scored.supportType          = c.pb_supportType ?? null
+      scored.prevDayVolRatio      = c.pb_prevDayVolRatio ?? null
+      scored.turnaroundState      = c.pb_turnaroundState ?? null
+      scored.turnaround           = c.pb_turnaroundState
+        ? (c.pb_turnaroundState.startsWith('양봉') ? '양봉'
+            : c.pb_turnaroundState === '음봉 하락' ? '음봉' : null)
+        : null
+      if (c.pb_supportGapPct != null) {
+        scored.supportDisparity = (c.pb_supportGapPct >= 0 ? '+' : '')
+                                + c.pb_supportGapPct.toFixed(1) + '%'
+      }
+      if (c.pb_prevDayVolRatio != null) {
+        scored.yesterdayVolRatio = c.pb_prevDayVolRatio.toFixed(2) + 'x'
+      }
+      scored.badge = c.pb_badge ?? null
+    }
+    return scored
   }
-  // 스캔 성공 시 MA 데이터를 KV 캐시에 저장 (다음 스캔에서 재활용)
+  // 스캔 성공 시 MA + 하이브리드 지표를 KV 캐시에 저장 (다음 스캔에서 재활용)
   function saveMaToCache(ticker: string, d: Omit<QuantMaCacheEntry, 'cachedAt'>) {
     maCache[ticker] = { ...d, cachedAt: Date.now() }
   }
 
-  // ── 그룹 A: 코인 스캔 (업비트 API, 15개 전체 병렬) ──
+  // ── 공통: 일봉 배열 → 퀀트 스코어 완성 파이프 ──
+  // 일봉 1번만 fetch하고, 메모리에서 월봉/주봉/10이평선/하이브리드 거래량까지 모두 계산.
+  // daily bars는 오름차순(과거→현재) 순서여야 함.
+  function scoreFromDailyBars(
+    ticker: string, name: string, market: 'us' | 'kr' | 'coin',
+    isKorean: boolean, isCoin: boolean,
+    dailyBars: DailyBar[]
+  ): QuantStockResult | null {
+    // 월봉 10이평 + 전월 10이평
+    const monthlyBars = resampleDailyToMonthly(dailyBars)
+    if (monthlyBars.length < 10) return null
+    const monthlyCloses = monthlyBars.map(b => b.close)
+    const { ma10: ma10m, ma10Prev: ma10mPrv } = calcMa10(monthlyCloses)
+    if (ma10m == null) return null
+
+    // 주봉 10이평 + 전주 10이평 + 20이평
+    const weeklyBars = resampleDailyToWeekly(dailyBars)
+    if (weeklyBars.length < 20) return null
+    const weeklyCloses = weeklyBars.map(b => b.close)
+    const { ma10: ma10w, ma10Prev: ma10wPrv } = calcMa10(weeklyCloses)
+    const ma20w = calcMa20(weeklyCloses)
+    if (ma10w == null || ma20w == null) return null
+
+    // 현재가: 가장 최근 일봉 종가 (가장 실시간)
+    const rawClose = dailyBars[dailyBars.length - 1].close
+    if (!rawClose) return null
+
+    // 하이브리드 거래량 지표 (일간 방아쇠 + 롤링 N일)
+    const hybridVol = computeHybridVolMetrics(dailyBars, isCoin)
+
+    const breakoutResult = scoreStock({
+      ticker, name,
+      market: market === 'coin' ? ('coin' as unknown as 'us' | 'kr') : market,
+      isKorean,
+      rawClose,
+      ma10mRaw: ma10m, ma10mPrv,
+      ma10wRaw: ma10w, ma10wPrv, ma20wRaw: ma20w,
+      hybridVol,
+    })
+    if (!breakoutResult) return null
+
+    // ─ 눌림목 스코어 병행 계산 (동일 일봉 재사용, 추가 API 호출 없음) ─
+    const pullback = buildPullbackScore(dailyBars, isCoin)
+    let pb_totalScore: number | null = null
+    let pb_filterPassed: boolean | null = null
+    let pb_supportGapPct: number | null = null
+    let pb_supportType: string | null = null
+    let pb_prevDayVolRatio: number | null = null
+    let pb_turnaroundState: string | null = null
+    let pb_badge: string | null = null
+    if (pullback) {
+      const supportPct = parseFloat(pullback.supportDisparityPct.toFixed(2))
+      const yVolRatio  = pullback.yesterdayVolRatio != null
+        ? parseFloat(pullback.yesterdayVolRatio.toFixed(2))
+        : null
+      breakoutResult.pullbackScore        = pullback.totalScore
+      breakoutResult.pullbackFilterPassed = pullback.filterPassed
+      breakoutResult.supportGapPct        = supportPct
+      breakoutResult.supportType          = pullback.supportType
+      breakoutResult.prevDayVolRatio      = yVolRatio
+      breakoutResult.turnaround           = pullback.turnaroundState.startsWith('양봉')
+        ? '양봉' : (pullback.turnaroundState === '음봉 하락' ? '음봉' : null)
+      breakoutResult.turnaroundState      = pullback.turnaroundState
+      breakoutResult.supportDisparity     = (supportPct >= 0 ? '+' : '') + supportPct.toFixed(1) + '%'
+      breakoutResult.yesterdayVolRatio    = yVolRatio != null ? yVolRatio.toFixed(2) + 'x' : null
+      breakoutResult.badge                = pullback.badge
+      // 캐시 저장용 스냅샷
+      pb_totalScore        = pullback.totalScore
+      pb_filterPassed      = pullback.filterPassed
+      pb_supportGapPct     = supportPct
+      pb_supportType       = pullback.supportType
+      pb_prevDayVolRatio   = yVolRatio
+      pb_turnaroundState   = pullback.turnaroundState
+      pb_badge             = pullback.badge
+    }
+
+    // KV 캐시에 저장 (MA + 하이브리드 비율 + 눌림목 스냅샷)
+    //  - 눌림목 필드를 같이 저장해야 다음 캐시 히트 때 tryScoreFromCache가 복원 가능
+    //  - 이 줄이 빠지면 캐시 히트 item들의 pullbackScore/supportGapPct가 전부 null로 변함
+    saveMaToCache(ticker, {
+      rawClose,
+      ma10mRaw: ma10m,
+      ma10mPrv,
+      ma10wRaw: ma10w,
+      ma10wPrv,
+      ma20wRaw: ma20w,
+      dailyVolRatio:  hybridVol.dailyVolRatio,
+      weeklyVolRatio: hybridVol.rollingWindowRatio,
+      pb_totalScore,
+      pb_filterPassed,
+      pb_supportGapPct,
+      pb_supportType,
+      pb_prevDayVolRatio,
+      pb_turnaroundState,
+      pb_badge,
+    })
+    return breakoutResult
+  }
+
+  // ── 그룹 A: 코인 스캔 (업비트 일봉 API, 15개 전체 병렬) ──
+  // 종목당 일봉 1회 호출 → 주봉·월봉·10이평선·하이브리드 거래량 모두 자체 계산
   async function scanCoins(): Promise<QuantStockResult[]> {
     const results = await Promise.all(COIN_UNIVERSE.map(async (coin) => {
-      // KV 캐시 히트 → API 호출 건너뜀
       const cached = tryScoreFromCache(coin.ticker, coin.name, 'coin' as unknown as 'us' | 'kr', true)
       if (cached) return cached
       try {
-        const [monthlyBars, weeklyBars] = await Promise.all([
-          fetchUpbitMonthlyCandles(coin.ticker, 13),
-          fetchUpbitWeeklyCandles(coin.ticker, 42),
-        ])
-        if (monthlyBars.length < 10 || weeklyBars.length < 20) return null
-
-        const monthly = calcCoinMa10(monthlyBars)
-        const weekly  = calcCoinMa10Weekly(weeklyBars)
-
-        const rawClose = weekly.latestClose ?? monthly.currentMonthClose
-        if (!rawClose || !monthly.ma10 || !weekly.ma10w || !weekly.ma20w) return null
-
-        // 성공 → KV 캐시에 저장
-        saveMaToCache(coin.ticker, {
-          rawClose, ma10mRaw: monthly.ma10, ma10mPrv: monthly.smaPrev,
-          ma10wRaw: weekly.ma10w, ma10wPrv: weekly.ma10wPrev, ma20wRaw: weekly.ma20w,
-          volumeW: weekly.volumeW, volumeWAvg10: weekly.volumeWAvg10,
-        })
-        return scoreStock({
-          ticker: coin.ticker, name: coin.name,
-          market: 'coin' as unknown as 'us' | 'kr',
-          isKorean: true,
-          rawClose, ma10mRaw: monthly.ma10, ma10mPrv: monthly.smaPrev,
-          ma10wRaw: weekly.ma10w, ma10wPrv: weekly.ma10wPrev, ma20wRaw: weekly.ma20w,
-          volumeW: weekly.volumeW, volumeWAvg10: weekly.volumeWAvg10,
-        })
+        // 업비트 일봉 400개(약 13개월) — 내부 페이징으로 월봉 10이평(300일 필요) 확보
+        const dailyBars = await fetchUpbitDailyCandles(coin.ticker, 400)
+        if (dailyBars.length < 300) { _statApiFail++; return null }  // 월봉 10이평 + 여유분
+        return scoreFromDailyBars(coin.ticker, coin.name, 'coin', true, true, dailyBars)
       } catch (_) { _statApiFail++; return null }
     }))
     return results.filter((r): r is QuantStockResult => r != null)
   }
 
-  // ── 그룹 B: 한국 주식 (KIS 우선, 30개씩 병렬 — 딜레이 불필요) ──
+  // ── 그룹 B: 한국 주식 (KIS 우선, 실패 시 Yahoo 폴백) ──
+  // 종목당 일봉 1회 호출 → 메모리 재가공으로 모든 지표 계산
+  // [개선 2026-04-22] 순차 → 배치 병렬(4개/배치, 200ms 배치 간격)
+  //   - 과거: 100종목 × 300ms 순차 = 30초 > 20초 데드라인 → 30여개만 처리
+  //   - 개선: 100종목 / 4배치 × 200ms = ~5초로 완주. KIS 레이트리밋(20 TPS) 이하.
   async function scanKrStocks(): Promise<QuantStockResult[]> {
     // KIS 거래대금 조회에서 이미 받은 현재가로 잡주(2000원 미만) 사전 필터링
-    // → 불필요한 월봉·주봉 API 호출을 아예 안 하므로 시간 대폭 절약
+    // → 불필요한 일봉 API 호출을 아예 안 하므로 시간 대폭 절약
     const krFiltered = krUniverse.filter(s => {
       const kisItem = kisRaw?.find(k => k.ticker === s.ticker)
       if (kisItem && kisItem.price > 0 && kisItem.price < 2000) return false
@@ -2197,114 +2653,79 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
       if (cached) { results.push(cached); continue }
       krNeedScan.push(stock)
     }
-    // 한 종목씩 순차 처리 — KIS/Yahoo 레이트리밋 방지
-    // 20초 시간 제한 — Workers 타임아웃 방지, 나머지는 다음 스캔에서 KV 캐시로 커버
-    const krDeadline = Date.now() + 20000
-    for (let i = 0; i < krNeedScan.length; i++) {
-      if (Date.now() > krDeadline) break  // 시간 초과 → 여기까지만
-      const stock = krNeedScan[i]
-      if (i > 0) await new Promise(r => setTimeout(r, 300))
+    // 단일 종목 처리 — 네트워크 예외·필터 탈락을 모두 삼켜 배치가 전부 실패하지 않도록
+    //  KIS 임계치 220: scoreFromDailyBars 내부가 월봉 10이평(= resample 10개) 을 요구하므로
+    //  220영업일 이상 확보돼야 함. 100바 단일 페이지만 받으면 점수가 null로 떨어져
+    //  items가 소수로 줄어들던 버그 방지.
+    async function processOne(stock: typeof krNeedScan[number]): Promise<QuantStockResult | null> {
       try {
-        const { yhTicker } = inferTicker(stock.ticker)
-        let ma10mRaw: number | null = null, ma10mPrv: number | null = null
-        let ma10wRaw: number | null = null, ma10wPrv: number | null = null
-        let ma20wRaw: number | null = null, rawClose = 0
-        let volumeW: number | null = null, volumeWAvg10: number | null = null
-
+        let dailyBars: DailyBar[] = []
         if (kisReady) {
-          const kisMBars = await fetchKisDomesticMonthly(kisEnv, stock.ticker)
-          await new Promise(r => setTimeout(r, 200))
-          const kisWBars = await fetchKisDomesticWeekly(kisEnv, stock.ticker)
-          const kisM = (kisMBars.length >= 10) ? calcMa10FromBars(kisMBars) : null
-          const kisW = (kisWBars.length >= 10) ? calcWeeklyMaFromBars(kisWBars) : null
-
-          if (kisM?.ma10 && kisW?.ma10w) {
-            ma10mRaw = kisM.ma10
-            if (kisMBars.length >= 11) {
-              const prev10 = kisMBars.slice(-11, -1).map(b => b.close)
-              ma10mPrv = Math.round(prev10.reduce((s, v) => s + v, 0) / 10)
-            }
-            ma10wRaw = kisW.ma10w; ma10wPrv = kisW.ma10wPrev; ma20wRaw = kisW.ma20w
-            rawClose = kisW.latestClose ?? kisM.currentClose ?? 0
-            volumeW = kisW.volumeW; volumeWAvg10 = kisW.volumeWAvg10
-          } else {
-            // KIS 실패 → Yahoo 폴백 (순차)
-            const monthly = await fetchMa10Data(yhTicker)
-            await new Promise(r => setTimeout(r, 300))
-            const weekly = await fetchMaWeeklyData(yhTicker)
-            if (!monthly || !weekly) { _statApiFail++; continue }
-            ma10mRaw = monthly.ma10; ma10mPrv = monthly.smaPrev
-            ma10wRaw = weekly.ma10w; ma10wPrv = weekly.ma10wPrev; ma20wRaw = weekly.ma20w
-            rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
-            volumeW = weekly.volumeW ?? null; volumeWAvg10 = weekly.volumeWAvg10 ?? null
+          const kisBars = await fetchKisDomesticDaily(kisEnv, stock.ticker)
+          if (kisBars.length >= 220) {
+            dailyBars = kisBars.map(b => ({ date: b.date, close: b.close, volume: b.volume }))
           }
-        } else {
-          const monthly = await fetchMa10Data(yhTicker)
-          await new Promise(r => setTimeout(r, 300))
-          const weekly = await fetchMaWeeklyData(yhTicker)
-          if (!monthly || !weekly) { _statApiFail++; continue }
-          ma10mRaw = monthly.ma10; ma10mPrv = monthly.smaPrev
-          ma10wRaw = weekly.ma10w; ma10wPrv = weekly.ma10wPrev; ma20wRaw = weekly.ma20w
-          rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
-          volumeW = weekly.volumeW ?? null; volumeWAvg10 = weekly.volumeWAvg10 ?? null
         }
+        if (dailyBars.length < 220) {
+          const { yhTicker } = inferTicker(stock.ticker)
+          dailyBars = await fetchYahooDailyBars(yhTicker)
+        }
+        if (dailyBars.length < 60) { _statApiFail++; return null }
+        return scoreFromDailyBars(stock.ticker, stock.name, 'kr', true, false, dailyBars)
+      } catch (_) { _statApiFail++; return null }
+    }
 
-        if (!rawClose || !ma10mRaw || !ma10wRaw || !ma20wRaw) { _statApiFail++; continue }
-        saveMaToCache(stock.ticker, { rawClose, ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw, volumeW, volumeWAvg10 })
-        const scored = scoreStock({
-          ticker: stock.ticker, name: stock.name, market: 'kr',
-          isKorean: true, rawClose, ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw, volumeW, volumeWAvg10,
-        })
-        if (scored) results.push(scored)
-      } catch (_) { _statApiFail++ }
+    // 배치 병렬 처리
+    //  - KIS 설정 시: 4/배치 × 200ms (KIS 20 TPS 충분)
+    //  - KIS 미설정: Yahoo 폴백만 사용하므로 2/배치 × 300ms (Yahoo 차단 회피)
+    const BATCH = kisReady ? 4 : 2
+    const GAP   = kisReady ? 200 : 300
+    const krDeadline = Date.now() + 22000
+    for (let i = 0; i < krNeedScan.length; i += BATCH) {
+      if (Date.now() > krDeadline) break
+      const batch = krNeedScan.slice(i, i + BATCH)
+      const settled = await Promise.all(batch.map(processOne))
+      for (const r of settled) if (r) results.push(r)
+      if (i + BATCH < krNeedScan.length) await new Promise(r => setTimeout(r, GAP))
     }
     return results
   }
 
   // ── 그룹 C: 미국 주식 (Yahoo Finance) ──
-  // Yahoo Finance는 Cloudflare Workers IP에서 동시 요청이 오면 대부분 차단합니다.
-  // 해결: 한 종목씩 순차 처리 + 500ms 간격으로 레이트리밋을 확실히 피합니다.
-  // KV 캐시가 있는 종목은 건너뛰므로, 2~3번 재스캔하면 대부분 캐싱됩니다.
+  // Yahoo는 동시 요청·Workers IP에 민감. 소규모 배치 병렬(3개/배치)로 스루풋 ↑ + 레이트리밋 회피.
+  // [개선 2026-04-22] 순차 500ms → 배치 3개/400ms
+  //   - 과거: 100종목 × 500ms = 50초 → 20초 데드라인에서 40개만 → 60개 apiFail
+  //   - 개선: 100종목 / 3배치 × 400ms = ~14초 → 대부분 완주
+  //   - KV 캐시가 있는 종목은 건너뛰므로 2~3번 재스캔하면 전체 캐싱됨
   async function scanUsStocks(): Promise<QuantStockResult[]> {
     const results: QuantStockResult[] = []
-    // KV 캐시 히트인 종목은 API 호출 건너뜀
     const usNeedScan: typeof usUniverse = []
     for (const stock of usUniverse) {
       const cached = tryScoreFromCache(stock.ticker, stock.name, 'us', false)
       if (cached) { results.push(cached); continue }
       usNeedScan.push(stock)
     }
-    // 한 종목씩 순차 처리 — Yahoo 레이트리밋 방지
-    // 종목당: 월봉 호출 → 주봉 호출 → 500ms 대기
-    // 20초 시간 제한 — Workers 타임아웃 방지, 나머지는 다음 스캔에서 KV 캐시로 커버
-    const usDeadline = Date.now() + 20000
-    for (let i = 0; i < usNeedScan.length; i++) {
-      if (Date.now() > usDeadline) break
-      const stock = usNeedScan[i]
-      if (i > 0) await new Promise(r => setTimeout(r, 500))
+    // 단일 종목 처리 — Yahoo query1 실패 시 query2로 내부 재시도 (fetchYahooDailyBars 내부)
+    async function processOne(stock: typeof usNeedScan[number]): Promise<QuantStockResult | null> {
       try {
         const { yhTicker } = inferTicker(stock.ticker)
-        const monthly = await fetchMa10Data(yhTicker)
-        if (!monthly) { _statApiFail++; continue }
-        await new Promise(r => setTimeout(r, 300))
-        const weekly = await fetchMaWeeklyData(yhTicker)
-        if (!weekly) { _statApiFail++; continue }
-
-        const rawClose = weekly.latestClose ?? monthly.currentMonthClose ?? 0
-        if (!rawClose || !monthly.ma10 || !weekly.ma10w || !weekly.ma20w) { _statApiFail++; continue }
-
-        const ma10mRaw = monthly.ma10, ma10mPrv = monthly.smaPrev ?? null
-        const ma10wRaw = weekly.ma10w, ma10wPrv = weekly.ma10wPrev ?? null, ma20wRaw = weekly.ma20w
-        const volumeW = weekly.volumeW ?? null, volumeWAvg10 = weekly.volumeWAvg10 ?? null
-        saveMaToCache(stock.ticker, { rawClose, ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw, volumeW, volumeWAvg10 })
-        const scored = scoreStock({
-          ticker: stock.ticker, name: stock.name, market: 'us',
-          isKorean: false, rawClose,
-          ma10mRaw, ma10mPrv, ma10wRaw, ma10wPrv, ma20wRaw,
-          volumeW, volumeWAvg10,
-        })
-        if (scored) results.push(scored)
-      } catch (_) { _statApiFail++ }
+        const dailyBars = await fetchYahooDailyBars(yhTicker)
+        if (dailyBars.length < 60) { _statApiFail++; return null }
+        return scoreFromDailyBars(stock.ticker, stock.name, 'us', false, false, dailyBars)
+      } catch (_) { _statApiFail++; return null }
+    }
+    const BATCH = 2      // Yahoo는 병렬 3 이상이면 차단 급증 → 2개로 완화
+    const GAP   = 350    // 배치 간격
+    const usDeadline = Date.now() + 22000   // 30s 버짓 대비 여유
+    for (let i = 0; i < usNeedScan.length; i += BATCH) {
+      if (Date.now() > usDeadline) {
+        for (let j = i; j < usNeedScan.length; j++) _statApiFail++
+        break
+      }
+      const batch = usNeedScan.slice(i, i + BATCH)
+      const settled = await Promise.all(batch.map(processOne))
+      for (const r of settled) if (r) results.push(r)
+      if (i + BATCH < usNeedScan.length) await new Promise(r => setTimeout(r, GAP))
     }
     return results
   }
@@ -2312,10 +2733,18 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   // ── 이전 결과 로드 (재스캔 시 API 실패로 종목이 사라지는 것 방지) ──
   // Cloudflare Workers는 매 요청마다 메모리가 리셋될 수 있으므로,
   // KV에 저장된 이전 결과를 기반(base)으로 삼고 새 결과로 덮어씁니다.
+  //  - [2026-04-23] stale 항목 정리: 눌림목 필드가 전혀 없는 item은 fresh 스캔이
+  //    오래 실패했다는 뜻이므로 base에서 제외 → 이번 스캔에서 다시 수집되면 그때 추가됨.
+  //    이 필터가 없으면 Yahoo 차단 종목이 구 버전 스냅샷으로 영구 잔류하며
+  //    +24.2% 같은 새 컬럼이 null로 표시되는 UX 문제가 발생.
   let previousItems: QuantStockResult[] = []
   try {
     const prev = await env.CUSTOM_TICKERS.get(QUANT_TOP50_KV_KEY, 'json') as QuantCacheData | null
-    if (prev?.items) previousItems = prev.items
+    if (prev?.items) {
+      previousItems = prev.items.filter(it =>
+        it.pullbackScore != null || it.supportGapPct != null
+      )
+    }
   } catch (_) {}
 
   // ── 3개 그룹 동시 실행 ──
@@ -2352,12 +2781,15 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
   // 종목별 MA 캐시를 KV에 저장 (다음 스캔에서 성공한 종목은 API 호출 건너뜀)
   await saveQuantMaCache(env.CUSTOM_TICKERS, maCache)
 
-  // 퀀트 결과 KV 저장 (4시간 TTL)
+  // 퀀트 결과 KV 저장 (72시간 TTL)
+  //  - 이전: 4h — 3일 이상 재스캔 안하면 누적 상태가 증발 → 재스캔 시 mergedFromPrev=0이 되어
+  //    통과 종목이 적은 날(예: 약세장)에 Top 50이 한 자릿수로 붕괴.
+  //  - 현재: 72h — 주말 포함 미사용 3일까지 누적 상태 유지. MA cache(24h)와 독립적으로 운용.
   try {
     await env.CUSTOM_TICKERS.put(
       QUANT_TOP50_KV_KEY,
       JSON.stringify(cacheData),
-      { expirationTtl: 4 * 60 * 60 }
+      { expirationTtl: 72 * 60 * 60 }
     )
   } catch (_) {}
 
@@ -2369,24 +2801,62 @@ async function buildQuantTop50(env: Env): Promise<QuantCacheData> {
 // GET /api/quant-top50?refresh=1 → 강제 재스캔
 app.get('/api/quant-top50', async (c) => {
   const forceRefresh = c.req.query('refresh') === '1'
+  // [듀얼모드] scanMode=breakout(기본) | pullback
+  // 기본은 기존 돌파 로직 100% 그대로 (회귀 무위험)
+  // pullback이면 동일 응답에 스텁 필드(pullbackScore=null 등) 부착하여 프론트가 placeholder 표시
+  const scanMode = c.req.query('scanMode') === 'pullback' ? 'pullback' : 'breakout'
+
+  let payload: QuantCacheData & { fromCache?: boolean } | null = null
 
   if (!forceRefresh) {
     try {
       const cached = await c.env.CUSTOM_TICKERS.get(QUANT_TOP50_KV_KEY, 'json') as QuantCacheData | null
       if (cached?.builtAt && Date.now() - new Date(cached.builtAt).getTime() < QUANT_TTL_MS) {
-        return c.json({ ...cached, fromCache: true })
+        payload = { ...cached, fromCache: true }
       }
     } catch (_) {}
   }
 
-  const result = await buildQuantTop50(c.env)
-  return c.json({ ...result, fromCache: false })
+  if (!payload) {
+    const result = await buildQuantTop50(c.env)
+    payload = { ...result, fromCache: false }
+  }
+
+  // [듀얼모드] 눌림목 모드: scoreFromDailyBars가 빌드 시점에 pullbackScore 등을
+  // 이미 item에 부착해 놓았으므로 별도 계산 불필요. scanMode 표식만 붙여 응답.
+  // 이전 스키마(QuantStockResult에 pullback 필드 없음)로 캐싱된 아이템의 경우
+  // pullbackScore=undefined → 프론트에서 자동으로 "준비중" 표시 (다음 24시간 캐시 갱신 후 정상화).
+  if (scanMode === 'pullback' && payload.items) {
+    payload = {
+      ...payload,
+      scanMode: 'pullback',
+      items: payload.items.map((it: any) => ({
+        ...it,
+        // pullback 모드에서는 정렬 키를 pullbackScore로 자연 사용 — pullbackScore가
+        // null이면 기본 순위 유지. 85점 이상 badge 필드는 item에 이미 포함됨.
+        pullbackScore:      it.pullbackScore   ?? null,
+        supportGapPct:      it.supportGapPct   ?? null,
+        supportType:        it.supportType     ?? null,
+        prevDayVolRatio:    it.prevDayVolRatio ?? null,
+        turnaround:         it.turnaround      ?? null,
+        turnaroundState:    it.turnaroundState ?? null,
+        supportDisparity:   it.supportDisparity   ?? null,
+        yesterdayVolRatio:  it.yesterdayVolRatio  ?? null,
+        badge:              it.badge ?? null,
+      }))
+    } as any
+  } else {
+    payload = { ...payload, scanMode: 'breakout' } as any
+  }
+
+  return c.json(payload)
 })
 
 // ═══════════════════════════════════════════════════
 // 인기 코인 TOP50 — 업비트 24시간 거래대금 상위 50개 + 퀀트 점수
 // ═══════════════════════════════════════════════════
-const COIN_TOP50_KV_KEY = 'coin_top50_v1'
+// v2 (2026-04-23): 눌림목 필드 추가 — 이전 캐시는 pullbackScore 등이 없으므로 키 승격으로 무효화
+const COIN_TOP50_KV_KEY = 'coin_top50_v2'
 const COIN_TOP50_TTL_MS  = 1 * 60 * 60 * 1000  // 1시간 캐시
 
 interface UpbitMarketInfo { market: string; korean_name: string; english_name: string }
@@ -2436,47 +2906,106 @@ app.get('/api/coin-top50', async (c) => {
   tickers24h.sort((a, b) => b.acc_trade_price_24h - a.acc_trade_price_24h)
   const top50 = tickers24h.slice(0, 50)
 
-  // ② 각 코인: 월봉 + 주봉 병렬 조회 → 신호 + 퀀트 점수
-  const rawItems = (await Promise.all(top50.map(async (item, idx) => {
-    try {
-      const [monthlyBars, weeklyBars] = await Promise.all([
-        fetchUpbitMonthlyCandles(item.market, 13),
-        fetchUpbitWeeklyCandles(item.market, 42),
-      ])
-      if (monthlyBars.length < 3) return null
-      const monthly = calcCoinMa10(monthlyBars)
-      const weekly  = weeklyBars.length >= 10 ? calcCoinMa10Weekly(weeklyBars) : null
+  // ② 각 코인: 일봉 400개 1회 fetch → 공용 calcQuantScoreFromDaily로 A/B/C/D 계산
+  // 업비트 레이트리밋 배려 — 5개씩 배치, 배치 간 200ms 간격
+  //  ★ 눌림목 필드는 일봉 재사용하므로 추가 API 호출 없이 항상 함께 계산 (duplicate fetch 방지)
+  type RawCoinItem = {
+    rank: number; ticker: string; name: string; price: number
+    signal: 'bull' | 'bear' | null
+    ma10m: number | null; ma10w: number | null
+    score: number; scoreA: number; scoreB: number
+    scoreBDaily: number; scoreBWeekly: number; scoreC: number; scoreD: number
+    gapPct: number; volRatio: number
+    dailyVolRatio: number; weeklyVolRatio: number
+    weeklySlope: number; monthlySlope: number
+    accTradePrice24h: number
+    // 눌림목 모드 필드 (항상 계산 — 프론트는 모드에 따라 선택적으로 표시)
+    pullbackScore:    number | null
+    supportGapPct:    number | null
+    supportType:      string | null
+    prevDayVolRatio:  number | null
+    turnaround:       string | null
+    turnaroundState:  string | null
+    supportDisparity: string | null
+    yesterdayVolRatio: string | null
+    badge:            string | null
+    filterPassed:     boolean | null
+  }
+  const rawItems: RawCoinItem[] = []
+  const BATCH = 5
+  for (let i = 0; i < top50.length; i += BATCH) {
+    const batch = top50.slice(i, i + BATCH)
+    const batchResults = await Promise.all(batch.map(async (item): Promise<RawCoinItem | null> => {
+      try {
+        const dailyBars = await fetchUpbitDailyCandles(item.market, 400)
+        const scored = dailyBars.length >= 60 ? calcQuantScoreFromDaily(dailyBars, true) : null
+        const rawClose = scored?.rawClose ?? item.trade_price ?? 0
+        const base = {
+          rank: 0,
+          ticker: item.market,
+          name: nameMap[item.market] || item.market.replace('KRW-', ''),
+          price: Math.round(rawClose),
+          accTradePrice24h: item.acc_trade_price_24h,
+        }
+        // 눌림목 점수 (돌파와 동일 일봉 재사용)
+        const pullback = dailyBars.length >= 70 ? buildPullbackScore(dailyBars, true) : null
+        const pb = pullback ? {
+          pullbackScore:     pullback.totalScore,
+          supportGapPct:     parseFloat(pullback.supportDisparityPct.toFixed(2)),
+          supportType:       pullback.supportType,
+          prevDayVolRatio:   pullback.yesterdayVolRatio != null ? parseFloat(pullback.yesterdayVolRatio.toFixed(2)) : null,
+          turnaroundState:   pullback.turnaroundState,
+          turnaround:        pullback.turnaroundState.startsWith('양봉') ? '양봉'
+                               : pullback.turnaroundState === '음봉 하락' ? '음봉' : null,
+          supportDisparity:  (pullback.supportDisparityPct >= 0 ? '+' : '') + pullback.supportDisparityPct.toFixed(1) + '%',
+          yesterdayVolRatio: pullback.yesterdayVolRatio != null ? pullback.yesterdayVolRatio.toFixed(2) + 'x' : null,
+          badge:             pullback.badge,
+          filterPassed:      pullback.filterPassed,
+        } : {
+          pullbackScore: null, supportGapPct: null, supportType: null,
+          prevDayVolRatio: null, turnaroundState: null, turnaround: null,
+          supportDisparity: null, yesterdayVolRatio: null, badge: null, filterPassed: null,
+        }
+        if (!scored) {
+          // 데이터 부족: 리스트에는 유지하되 점수 0 (눌림목은 계산 가능하면 함께 반환)
+          return {
+            ...base,
+            signal: null, ma10m: null, ma10w: null,
+            score: 0, scoreA: 0, scoreB: 0, scoreBDaily: 0, scoreBWeekly: 0,
+            scoreC: 0, scoreD: 0,
+            gapPct: 0, volRatio: 0, dailyVolRatio: 0, weeklyVolRatio: 0,
+            weeklySlope: 0, monthlySlope: 0,
+            ...pb,
+          }
+        }
+        return {
+          ...base,
+          signal: scored.rawClose > scored.ma10m ? 'bull' : 'bear',
+          ma10m:  Math.round(scored.ma10m),
+          ma10w:  Math.round(scored.ma10w),
+          score:        scored.score,
+          scoreA:       scored.scoreA,
+          scoreB:       scored.scoreB,
+          scoreBDaily:  scored.scoreBDaily,
+          scoreBWeekly: scored.scoreBWeekly,
+          scoreC: scored.scoreC,
+          scoreD: scored.scoreD,
+          gapPct:         parseFloat(scored.gapPct.toFixed(2)),
+          volRatio:       parseFloat(scored.weeklyVolRatio.toFixed(2)),   // 하위호환
+          dailyVolRatio:  parseFloat(scored.dailyVolRatio.toFixed(2)),
+          weeklyVolRatio: parseFloat(scored.weeklyVolRatio.toFixed(2)),
+          weeklySlope:    parseFloat(scored.weeklySlope.toFixed(3)),
+          monthlySlope:   parseFloat(scored.monthlySlope.toFixed(3)),
+          ...pb,
+        }
+      } catch (_) { return null }
+    }))
+    rawItems.push(...batchResults.filter((x): x is RawCoinItem => x != null))
+    if (i + BATCH < top50.length) await new Promise(r => setTimeout(r, 200))
+  }
 
-      const rawClose = item.trade_price || weekly?.latestClose || monthly.currentMonthClose || 0
-      let score = 0, scoreA = 0, scoreB = 0, scoreC = 0, scoreD = 0
-      let gapPct = 0, volRatio = 0, weeklySlope = 0, monthlySlope = 0
-      if (weekly?.ma10w) {
-        gapPct      = rawClose && weekly.ma10w ? (rawClose - weekly.ma10w) / weekly.ma10w * 100 : 0
-        volRatio    = weekly.volumeW && weekly.volumeWAvg10 && weekly.volumeWAvg10 > 0 ? weekly.volumeW / weekly.volumeWAvg10 : 0
-        weeklySlope = weekly.ma10wPrev && weekly.ma10wPrev > 0 ? (weekly.ma10w - weekly.ma10wPrev) / weekly.ma10wPrev * 100 : 0
-        monthlySlope = monthly.smaPrev && monthly.smaPrev > 0 && monthly.ma10 ? (monthly.ma10 - monthly.smaPrev) / monthly.smaPrev * 100 : 0
-        scoreA = scoreQuantGap(gapPct); scoreB = scoreQuantVol(volRatio)
-        scoreC = scoreQuantWeeklySlope(weeklySlope); scoreD = scoreQuantMonthlySlope(monthlySlope)
-        score = scoreA + scoreB + scoreC + scoreD
-      }
-      return {
-        rank: 0,  // 필터 후 재부여
-        ticker: item.market,
-        name: nameMap[item.market] || item.market.replace('KRW-', ''),
-        price: Math.round(rawClose),
-        signal: monthly.signal,
-        ma10m:  monthly.ma10 ? Math.round(monthly.ma10) : null,
-        ma10w:  weekly?.ma10w ? Math.round(weekly.ma10w) : null,
-        score, scoreA, scoreB, scoreC, scoreD,
-        gapPct: parseFloat(gapPct.toFixed(2)), volRatio: parseFloat(volRatio.toFixed(2)),
-        weeklySlope: parseFloat(weeklySlope.toFixed(3)), monthlySlope: parseFloat(monthlySlope.toFixed(3)),
-        accTradePrice24h: item.acc_trade_price_24h,
-      }
-    } catch (_) { return null }
-  }))).filter(Boolean)
-
-  // 24h 거래대금 순 유지 + 순번 재부여 (일부 null 제거 후 번호 연속 보장)
-  const items = rawItems.map((it, i) => ({ ...it!, rank: i + 1 }))
+  // 24h 거래대금 순 유지 + 순번 재부여 (null 제거 후 번호 연속 보장)
+  const items = rawItems.map((it, i) => ({ ...it, rank: i + 1 }))
 
   const cacheData = { items, builtAt: new Date().toISOString(), totalScanned: top50.length }
   try {

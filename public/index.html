@@ -1007,12 +1007,26 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
         <button onclick="switchRadarTab('us')"    id="radar-tab-us"    class="radar-subtab px-4 py-2 rounded-xl text-sm font-semibold border-2 border-slate-200 text-slate-500">🇺🇸 S&amp;P500 Top 100</button>
         <button onclick="switchRadarTab('coin')"  id="radar-tab-coin"  class="radar-subtab px-4 py-2 rounded-xl text-sm font-semibold border-2 border-slate-200 text-slate-500"><i class="fas fa-coins" style="color:#854d0e;margin-right:4px;"></i>인기코인 TOP50</button>
         <button onclick="switchRadarTab('watch')" id="radar-tab-watch" class="radar-subtab px-4 py-2 rounded-xl text-sm font-semibold border-2 border-slate-200 text-slate-500">⭐ 내 관심종목</button>
-        <div id="radar-scan-btns" class="ml-auto flex gap-2">
-          <button onclick="loadRadarList()"  id="radar-load-btn"  class="btn-secondary text-sm px-4 py-2"><i class="fas fa-download mr-1"></i> 목록 불러오기</button>
-          <button onclick="scanRadar()"      id="radar-scan-btn"  class="btn-primary   text-sm px-4 py-2"><i class="fas fa-search mr-1"></i> 10이평 스캔</button>
-        </div>
-        <div id="quant-scan-btns" class="ml-auto flex gap-2" style="display:none;">
-          <button onclick="refreshQuantTop50()" id="quant-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 퀀트 재스캔</button>
+        <!-- 우측 그룹: [듀얼모드 토글] + [스캔 버튼] — 항상 우측 정렬 -->
+        <div class="ml-auto flex gap-2 items-center">
+          <!-- 듀얼모드 세그먼트 토글: 돌파 / 눌림목 -->
+          <div id="scan-mode-toggle" class="flex border-2 border-slate-200 rounded-xl overflow-hidden" title="스캔 모드 전환 (돌파 ↔ 눌림목)">
+            <button onclick="setRadarScanMode('breakout')" id="scan-mode-breakout"
+                    class="px-3 py-2 text-xs font-bold transition-all"
+                    style="background:#3b82f6;color:white;border:none;cursor:pointer;">🚀 돌파</button>
+            <button onclick="setRadarScanMode('pullback')" id="scan-mode-pullback"
+                    class="px-3 py-2 text-xs font-bold transition-all"
+                    style="background:white;color:#64748b;border:none;cursor:pointer;">🧘 눌림목</button>
+          </div>
+          <div id="radar-scan-btns" class="flex gap-2">
+            <button onclick="autoLoadAndScanRadar(true)" id="radar-scan-btn"  class="btn-primary   text-sm px-4 py-2"><i class="fas fa-search mr-1"></i> 다시 스캔</button>
+          </div>
+          <div id="quant-scan-btns" class="flex gap-2" style="display:none;">
+            <button onclick="refreshQuantTop50()" id="quant-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 퀀트 재스캔</button>
+          </div>
+          <div id="coin-scan-btns" class="flex gap-2" style="display:none;">
+            <button onclick="refreshCoinTop50()" id="coin-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 재스캔</button>
+          </div>
         </div>
       </div>
 
@@ -1128,10 +1142,7 @@ th.sortable:not(.asc):not(.desc) .sort-icon::after{content:'↕';}
 
       <!-- ══ 인기코인 TOP50 패널 ══ -->
       <div id="coin-top50-panel" style="display:none;">
-        <!-- 상단 버튼 -->
-        <div class="flex items-start justify-end gap-3 mb-2 flex-wrap">
-          <button onclick="refreshCoinTop50()" id="coin-refresh-btn" class="btn-primary text-sm px-4 py-2 whitespace-nowrap"><i class="fas fa-bolt mr-1"></i> 재스캔</button>
-        </div>
+        <!-- 재스캔 버튼은 상단 탭 줄의 coin-scan-btns로 이동 (scan-mode-toggle과 같은 줄 정렬) -->
         <!-- 랭킹 기준 서브 설명 -->
         <div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3 leading-relaxed">
           🪙 <b>업비트 KRW 마켓 · 24시간 거래대금 상위 50 내림차순</b> — 랭킹 기준은 <b>24h 거래대금</b> (퀀트 점수가 아님)
@@ -6008,13 +6019,69 @@ function renderAll(){renderDashboard();renderMasterTable();renderSignalTable();r
 // ────────────────────────────────────────────
 // 레이더 — 추세추종 유니버스 감시
 // ────────────────────────────────────────────
-var radarCurrentTab  = 'quant';
+// [탭 영속화] localStorage로 마지막 선택 탭 복원. 새로고침 후에도 보던 탭 유지.
+//  유효값 검증: 저장된 값이 현재 지원하는 탭 목록에 없으면 기본값 'quant'로 안전 복귀.
+var LS_RADAR_TAB = 'jujini_radarTab';
+var VALID_RADAR_TABS = ['quant', 'kr', 'us', 'coin', 'watch'];
+var radarCurrentTab  = (function(){
+  try {
+    var v = localStorage.getItem(LS_RADAR_TAB);
+    return VALID_RADAR_TABS.indexOf(v) >= 0 ? v : 'quant';
+  } catch(e) { return 'quant'; }
+})();
 var radarUniverseKr  = [];   // [{rank, name, ticker, price, changeRate, tradeAmount}]
 var radarUniverseUs  = [];   // [{rank, name, ticker}]
 var radarWatchlist   = [];   // [{name, ticker, market}]
 var radarScanData    = {};   // ticker → {ma10, curPrice, signal}
 var radarIsScanning  = false;
 var radarSearchTimer = null;
+
+// ────────────────────────────────────────────
+// [스캔 결과 클라이언트 캐시] localStorage 기반, 30분 TTL
+// 국장/미장/관심종목 탭의 Yahoo 스캔은 30~60초 소요 — 새로고침 시마다 재스캔하면
+// 사용성 나쁨. 30분 동안은 직전 결과 그대로 사용하고, 사용자가 "다시 스캔" 눌렀을 때만 재조회.
+// 퀀트/코인 탭은 이미 서버 KV 캐시(24h / 2h)가 있어 클라이언트 캐시는 적용하지 않음.
+// ────────────────────────────────────────────
+var LS_RADAR_CACHE = 'jujini_radarScanCache';
+var RADAR_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function loadRadarCache(tab) {
+  try {
+    var raw = localStorage.getItem(LS_RADAR_CACHE);
+    if (!raw) return null;
+    var all = JSON.parse(raw);
+    var entry = all && all[tab];
+    if (!entry || !entry.cachedAt) return null;
+    if (Date.now() - entry.cachedAt > RADAR_CACHE_TTL_MS) return null;
+    return entry;
+  } catch(e) { return null; }
+}
+
+function saveRadarCache(tab, universe, scanData, mode) {
+  try {
+    var raw = localStorage.getItem(LS_RADAR_CACHE);
+    var all = raw ? JSON.parse(raw) : {};
+    // 현재 탭 티커 범위로 scanData 슬라이스 (다른 탭 ticker 섞임 방지)
+    var slice = {};
+    (universe || []).forEach(function(it) {
+      if (scanData[it.ticker]) slice[it.ticker] = scanData[it.ticker];
+    });
+    all[tab] = {
+      universe: universe,
+      scanData: slice,
+      mode:     mode,
+      cachedAt: Date.now(),
+    };
+    localStorage.setItem(LS_RADAR_CACHE, JSON.stringify(all));
+  } catch(e) {
+    // localStorage 할당 초과 등 — 조용히 무시 (다음 스캔이 덮어쓰기 재시도)
+    console.warn('[radarCache] save failed:', e);
+  }
+}
+
+function radarCacheAgeMin(cachedAt) {
+  return Math.floor((Date.now() - cachedAt) / 60000);
+}
 // 퀀트 TOP50 상태
 var quantData        = null;  // QuantCacheData
 var quantLoaded      = false;
@@ -6022,7 +6089,172 @@ var _quantLwChart    = null;  // 드로어 내부 LightweightCharts 인스턴스
 var _quantChartInterval = '1mo'; // 현재 드로어 차트 간격
 var _quantDrawerItem = null;  // 현재 드로어에 표시 중인 종목
 
-// 레이더/퀀트/코인 테이블 정렬 상태
+// ────────────────────────────────────────────
+// 듀얼 스캔 모드 (돌파 ↔ 눌림목)
+// 기존 돌파 로직은 100% 보존, 눌림목 모드는 신규 컬럼 세트로 전환
+// localStorage('jujini_scanMode')에 마지막 선택 저장
+// ────────────────────────────────────────────
+var LS_SCAN_MODE = 'jujini_scanMode';
+var _radarScanMode = (function(){
+  try {
+    var v = localStorage.getItem(LS_SCAN_MODE);
+    return v === 'pullback' ? 'pullback' : 'breakout';
+  } catch(e) { return 'breakout'; }
+})();
+
+// 두 패널의 colgroup+thead HTML 템플릿
+// 돌파 모드는 기존 정적 HTML과 100% 동일 (기능 보존), 모드 토글 시 swap
+var SCAN_MODE_HEAD = {
+  radar: {
+    breakout:
+      '<colgroup>' +
+        '<col style="width:36px;"><col style="width:130px;"><col style="width:80px;"><col style="width:72px;">' +
+        '<col style="width:56px;"><col style="width:62px;"><col style="width:58px;"><col style="width:52px;"><col style="width:52px;"><col style="width:44px;">' +
+      '</colgroup>' +
+      '<thead style="position:sticky;top:0;z-index:10;background:white;"><tr>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"         onclick="toggleSort(\'radar\',\'rank\')"         title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>' +
+        '<th>종목명</th>' +
+        '<th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="curPrice"     onclick="toggleSort(\'radar\',\'curPrice\')"     title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">신호</th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="score"        onclick="toggleSort(\'radar\',\'score\')"        title="클릭하여 정렬">총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleQuantScoreGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="gapPct"       onclick="toggleSort(\'radar\',\'gapPct\')"       title="클릭하여 정렬">이격도%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleRadarDistGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="volRatio"     onclick="toggleSort(\'radar\',\'volRatio\')"     title="클릭하여 정렬">거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="weeklySlope"  onclick="toggleSort(\'radar\',\'weeklySlope\')"  title="클릭하여 정렬">주봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="monthlySlope" onclick="toggleSort(\'radar\',\'monthlySlope\')" title="클릭하여 정렬">월봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">관심</th>' +
+      '</tr></thead>',
+    pullback:
+      '<colgroup>' +
+        '<col style="width:36px;"><col style="width:118px;"><col style="width:80px;">' +
+        '<col style="width:64px;"><col style="width:108px;"><col style="width:72px;"><col style="width:68px;"><col style="width:44px;">' +
+      '</colgroup>' +
+      '<thead style="position:sticky;top:0;z-index:10;background:white;"><tr>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"           onclick="toggleSort(\'radar\',\'rank\')"           title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>' +
+        '<th>종목명</th>' +
+        '<th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="curPrice"       onclick="toggleSort(\'radar\',\'curPrice\')"       title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="pullbackScore"  onclick="toggleSort(\'radar\',\'pullbackScore\')"  title="클릭하여 정렬">눌림 총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="supportGapPct"  onclick="toggleSort(\'radar\',\'supportGapPct\')"  title="클릭하여 정렬">지지선이격%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="prevDayVolRatio" onclick="toggleSort(\'radar\',\'prevDayVolRatio\')" title="클릭하여 정렬">전일 거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">턴어라운드 <button onclick="event.stopPropagation();toggleTurnaroundGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>' +
+        '<th class="text-center">관심</th>' +
+      '</tr></thead>'
+  },
+  quant: {
+    breakout:
+      '<colgroup>' +
+        '<col style="width:42px;"><col style="width:160px;"><col style="width:96px;">' +
+        '<col style="width:66px;"><col style="width:78px;"><col style="width:76px;"><col style="width:72px;"><col style="width:72px;"><col style="width:48px;">' +
+      '</colgroup>' +
+      '<thead style="position:sticky;top:0;z-index:10;background:white;"><tr>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"         onclick="toggleSort(\'quant\',\'rank\')"         title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>' +
+        '<th>종목명</th>' +
+        '<th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="price"        onclick="toggleSort(\'quant\',\'price\')"        title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="score"        onclick="toggleSort(\'quant\',\'score\')"        title="클릭하여 정렬">총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleQuantScoreGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:2px;">!</button></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="gapPct"       onclick="toggleSort(\'quant\',\'gapPct\')"       title="클릭하여 정렬">이격도%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleQuantGapGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:2px;">!</button></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="volRatio"     onclick="toggleSort(\'quant\',\'volRatio\')"     title="클릭하여 정렬">거래량비율<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="weeklySlope"  onclick="toggleSort(\'quant\',\'weeklySlope\')"  title="클릭하여 정렬">주봉기울기<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="monthlySlope" onclick="toggleSort(\'quant\',\'monthlySlope\')" title="클릭하여 정렬">월봉기울기<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">관심</th>' +
+      '</tr></thead>',
+    pullback:
+      '<colgroup>' +
+        '<col style="width:42px;"><col style="width:146px;"><col style="width:96px;">' +
+        '<col style="width:76px;"><col style="width:118px;"><col style="width:82px;"><col style="width:76px;"><col style="width:48px;">' +
+      '</colgroup>' +
+      '<thead style="position:sticky;top:0;z-index:10;background:white;"><tr>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"            onclick="toggleSort(\'quant\',\'rank\')"            title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>' +
+        '<th>종목명</th>' +
+        '<th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="price"           onclick="toggleSort(\'quant\',\'price\')"           title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="pullbackScore"   onclick="toggleSort(\'quant\',\'pullbackScore\')"   title="클릭하여 정렬">눌림 총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="supportGapPct"   onclick="toggleSort(\'quant\',\'supportGapPct\')"   title="클릭하여 정렬">지지선이격%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="prevDayVolRatio" onclick="toggleSort(\'quant\',\'prevDayVolRatio\')" title="클릭하여 정렬">전일 거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">턴어라운드 <button onclick="event.stopPropagation();toggleTurnaroundGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>' +
+        '<th class="text-center">관심</th>' +
+      '</tr></thead>'
+  },
+  coin: {
+    breakout:
+      '<colgroup>' +
+        '<col style="width:36px;"><col style="width:130px;"><col style="width:90px;"><col style="width:72px;">' +
+        '<col style="width:56px;"><col style="width:62px;"><col style="width:58px;"><col style="width:52px;"><col style="width:52px;"><col style="width:44px;">' +
+      '</colgroup>' +
+      '<thead style="position:sticky;top:0;z-index:10;background:white;"><tr>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"         onclick="toggleSort(\'coin\',\'rank\')"         title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>' +
+        '<th>코인명</th>' +
+        '<th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="price"        onclick="toggleSort(\'coin\',\'price\')"        title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">신호</th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="score"        onclick="toggleSort(\'coin\',\'score\')"        title="클릭하여 정렬">총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span> <button onclick="event.stopPropagation();toggleQuantScoreGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="gapPct"       onclick="toggleSort(\'coin\',\'gapPct\')"       title="클릭하여 정렬">이격도%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="volRatio"     onclick="toggleSort(\'coin\',\'volRatio\')"     title="클릭하여 정렬">거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="weeklySlope"  onclick="toggleSort(\'coin\',\'weeklySlope\')"  title="클릭하여 정렬">주봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="monthlySlope" onclick="toggleSort(\'coin\',\'monthlySlope\')" title="클릭하여 정렬">월봉↑<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">관심</th>' +
+      '</tr></thead>',
+    pullback:
+      '<colgroup>' +
+        '<col style="width:36px;"><col style="width:118px;"><col style="width:90px;">' +
+        '<col style="width:64px;"><col style="width:108px;"><col style="width:72px;"><col style="width:68px;"><col style="width:44px;">' +
+      '</colgroup>' +
+      '<thead style="position:sticky;top:0;z-index:10;background:white;"><tr>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="rank"            onclick="toggleSort(\'coin\',\'rank\')"            title="클릭하여 정렬">순위<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;">▲</span></th>' +
+        '<th>코인명</th>' +
+        '<th class="text-right"  style="cursor:pointer;user-select:none;" data-sort-col="price"           onclick="toggleSort(\'coin\',\'price\')"           title="클릭하여 정렬">현재가<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="pullbackScore"   onclick="toggleSort(\'coin\',\'pullbackScore\')"   title="클릭하여 정렬">눌림 총점<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="supportGapPct"   onclick="toggleSort(\'coin\',\'supportGapPct\')"   title="클릭하여 정렬">지지선이격%<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center" style="cursor:pointer;user-select:none;" data-sort-col="prevDayVolRatio" onclick="toggleSort(\'coin\',\'prevDayVolRatio\')" title="클릭하여 정렬">전일 거래량<span class="sort-icon" style="font-size:9px;margin-left:2px;color:#475569;"></span></th>' +
+        '<th class="text-center">턴어라운드 <button onclick="event.stopPropagation();toggleTurnaroundGuide(event);" style="background:#e2e8f0;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;font-weight:900;color:#64748b;cursor:pointer;line-height:1;vertical-align:middle;margin-left:1px;">!</button></th>' +
+        '<th class="text-center">관심</th>' +
+      '</tr></thead>'
+  }
+};
+
+// 모드 전환 진입점 (토글 클릭)
+function setRadarScanMode(mode) {
+  if (mode !== 'breakout' && mode !== 'pullback') return;
+  if (_radarScanMode === mode) return;  // 동일 모드 클릭 시 noop
+  _radarScanMode = mode;
+  try { localStorage.setItem(LS_SCAN_MODE, mode); } catch(e) {}
+  updateScanModeToggleUI();
+  applyScanModeToTables();
+}
+
+// 토글 버튼 시각 활성화 상태 갱신
+function updateScanModeToggleUI() {
+  var bk = document.getElementById('scan-mode-breakout');
+  var pl = document.getElementById('scan-mode-pullback');
+  if (!bk || !pl) return;
+  var on  = 'background:#3b82f6;color:white;border:none;cursor:pointer;';
+  var off = 'background:white;color:#64748b;border:none;cursor:pointer;';
+  bk.setAttribute('style', (_radarScanMode === 'breakout' ? on : off));
+  pl.setAttribute('style', (_radarScanMode === 'pullback' ? on : off));
+}
+
+// 두 패널의 thead/colgroup 스왑 + 데이터 재렌더
+// 돌파 모드는 기존 데이터 그대로, 눌림목 모드는 신규 컬럼 + placeholder
+function applyScanModeToTables() {
+  // ── radar-main-panel 테이블 (KR/US/watch 탭 공용)
+  var radarTable = document.querySelector('#radar-main-panel table');
+  if (radarTable) {
+    var tbodyHTML = '<tbody id="radar-table-body"></tbody>';
+    radarTable.innerHTML = SCAN_MODE_HEAD.radar[_radarScanMode] + tbodyHTML;
+  }
+  // ── quant-panel 테이블
+  var quantTable = document.querySelector('#quant-panel table');
+  if (quantTable) {
+    var qBodyHTML = '<tbody id="quant-table-body"></tbody>';
+    quantTable.innerHTML = SCAN_MODE_HEAD.quant[_radarScanMode] + qBodyHTML;
+  }
+  // ── coin-top50-panel 테이블 (독립 패널)
+  var coinTable = document.querySelector('#coin-top50-panel table');
+  if (coinTable) {
+    var cBodyHTML = '<tbody id="coin-top50-table-body"></tbody>';
+    coinTable.innerHTML = SCAN_MODE_HEAD.coin[_radarScanMode] + cBodyHTML;
+  }
+  // 행 재렌더 (각 함수가 _radarScanMode를 보고 분기)
+  if (typeof renderRadarTable === 'function')  renderRadarTable();
+  if (typeof renderQuantTable === 'function' && quantData && quantData.items) renderQuantTable(quantData.items);
+  if (typeof renderCoinTop50Table === 'function' && coinTop50Data) renderCoinTop50Table(coinTop50Data);
+}
 // col: 정렬 대상 컬럼 키 (rank/price/curPrice/score/gapPct/volRatio/weeklySlope/monthlySlope)
 // order: 'asc' | 'desc'
 // 초기값 = rank 오름차순 (서버 반환 순서 = 탭별 랭킹 기준)
@@ -6038,16 +6270,20 @@ function getSortValue(which, item, col) {
   if (!item) return null;
   if (which === 'radar') {
     var scan = radarScanData[item.ticker] || {};
-    if (col === 'rank')         return item.rank;
-    if (col === 'curPrice')     return scan.curPrice != null ? scan.curPrice : item.price;
-    if (col === 'score')        return scan.score;
-    if (col === 'gapPct')       return scan.gapPct;
-    if (col === 'volRatio')     return scan.volRatio;
-    if (col === 'weeklySlope')  return scan.weeklySlope;
-    if (col === 'monthlySlope') return scan.monthlySlope;
+    if (col === 'rank')             return item.rank;
+    if (col === 'curPrice')         return scan.curPrice != null ? scan.curPrice : item.price;
+    if (col === 'score')            return scan.score;
+    if (col === 'gapPct')           return scan.gapPct;
+    if (col === 'volRatio')         return scan.volRatio;
+    if (col === 'weeklySlope')      return scan.weeklySlope;
+    if (col === 'monthlySlope')     return scan.monthlySlope;
+    // 눌림목 모드 신규 정렬키 (backend 미구현 시 null → 기본 순서 유지)
+    if (col === 'pullbackScore')    return scan.pullbackScore;
+    if (col === 'supportGapPct')    return scan.supportGapPct;
+    if (col === 'prevDayVolRatio')  return scan.prevDayVolRatio;
     return item[col];
   }
-  // quant / coin은 item 자체에 모든 필드가 있음
+  // quant / coin은 item 자체에 모든 필드가 있음 (눌림목 신규 필드도 동일 경로)
   return item[col];
 }
 
@@ -6153,8 +6389,21 @@ var RADAR_DESC_MAP = {
     + '<div class="text-slate-500 mt-1">별(★)로 담아둔 종목들 · 스캔으로 10이평 신호와 A/B/C/D 점수를 실시간으로 채움</div>',
 };
 
+// 듀얼모드 1회성 초기화 — localStorage에 저장된 모드가 'pullback'이면 thead 스왑
+var _scanModeInitialized = false;
+function ensureScanModeInit() {
+  if (_scanModeInitialized) return;
+  _scanModeInitialized = true;
+  updateScanModeToggleUI();
+  // HTML 기본 thead = 돌파 → pullback 저장된 경우만 스왑 (재렌더 비용 절약)
+  if (_radarScanMode !== 'breakout') applyScanModeToTables();
+}
+
 function switchRadarTab(tab) {
+  ensureScanModeInit();          // 토글/헤더를 저장된 모드와 동기화
   radarCurrentTab = tab;
+  // [탭 영속화] 사용자가 직접 선택한 탭은 localStorage에 저장 — 새로고침 후 복원
+  try { localStorage.setItem(LS_RADAR_TAB, tab); } catch(e) {}
   ['quant','kr','us','watch','coin'].forEach(function(t) {
     var btn = document.getElementById('radar-tab-' + t);
     if (!btn) return;
@@ -6167,6 +6416,7 @@ function switchRadarTab(tab) {
   var coinPanel    = document.getElementById('coin-top50-panel');
   var scanBtns     = document.getElementById('radar-scan-btns');
   var quantBtns    = document.getElementById('quant-scan-btns');
+  var coinBtns     = document.getElementById('coin-scan-btns');
   var radarDesc    = document.getElementById('radar-desc');
 
   if (mainPanel)  mainPanel.style.display  = 'none';
@@ -6174,6 +6424,7 @@ function switchRadarTab(tab) {
   if (coinPanel)  coinPanel.style.display  = 'none';
   if (scanBtns)   scanBtns.style.display   = 'none';
   if (quantBtns)  quantBtns.style.display  = 'none';
+  if (coinBtns)   coinBtns.style.display   = 'none';
 
   if (tab === 'quant') {
     if (quantPanel) quantPanel.style.display = '';
@@ -6181,6 +6432,7 @@ function switchRadarTab(tab) {
     loadQuantTop50();
   } else if (tab === 'coin') {
     if (coinPanel)  coinPanel.style.display  = '';
+    if (coinBtns)   coinBtns.style.display   = '';
     loadCoinTop50();
   } else {
     if (mainPanel)  mainPanel.style.display  = '';
@@ -6191,16 +6443,46 @@ function switchRadarTab(tab) {
 }
 
 // 레이더 자동 로드 → 완료 즉시 스캔 실행
-function autoLoadAndScanRadar() {
+// 탭 전환(forceRefresh=false) 또는 "다시 스캔" 버튼 클릭(forceRefresh=true) 시 호출됨.
+//  · forceRefresh=false: 30분 이내 캐시가 있으면 즉시 복원하고 스캔 생략
+//  · forceRefresh=true: 캐시 무시하고 유니버스 재조회 + 새 스캔
+function autoLoadAndScanRadar(forceRefresh) {
   var tab = radarCurrentTab;
-  var btn = document.getElementById('radar-load-btn');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 불러오는 중...'; }
+  var scanBtn = document.getElementById('radar-scan-btn');
+  function resetScanBtn() {
+    if (scanBtn) { scanBtn.disabled = false; scanBtn.innerHTML = '<i class="fas fa-search mr-1"></i> 다시 스캔'; }
+  }
+
+  // ─── 1) 캐시 우선 (자동 로드 경로 한정) ───
+  // 탭 전환 시 이미 30분 이내 scan 결과가 있으면 Yahoo 재조회 없이 즉시 복원.
+  // 현재 모드(_radarScanMode)와 캐시 모드가 일치할 때만 사용 (돌파↔눌림목 필드 차이 방지).
+  if (!forceRefresh) {
+    var cached = loadRadarCache(tab);
+    if (cached && cached.mode === _radarScanMode && cached.universe && cached.universe.length) {
+      if (tab === 'kr')         radarUniverseKr = cached.universe;
+      else if (tab === 'us')    radarUniverseUs = cached.universe;
+      else if (tab === 'watch') radarWatchlist  = cached.universe;
+      // scanData는 global 맵에 병합 — 같은 ticker는 캐시 값으로 갱신
+      Object.keys(cached.scanData || {}).forEach(function(k) {
+        radarScanData[k] = cached.scanData[k];
+      });
+      var ageMin = radarCacheAgeMin(cached.cachedAt);
+      document.getElementById('radar-status').textContent =
+        '캐시 복원 · ' + (cached.universe.length) + '개 종목 · ' + ageMin + '분 전 스캔 (새로 하려면 "다시 스캔")';
+      renderRadarTable();
+      resetScanBtn();
+      return;
+    }
+  }
+
+  if (scanBtn) { scanBtn.disabled = true; scanBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 불러오는 중...'; }
   document.getElementById('radar-status').textContent = '목록을 불러오는 중...';
 
   function afterLoad() {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-download mr-1"></i> 목록 불러오기'; }
     renderRadarTable();
-    // 스캔 즉시 실행
+    // scanRadar 내부가 버튼을 "스캔 중…"으로 전환 → 스캔 완료 시 직접 복원
+    // (이전에는 여기서 즉시 resetScanBtn 호출 → 스캔이 백그라운드로 진행 중인데
+    //  버튼이 바로 "다시 스캔"으로 돌아가 "이미 끝난 듯" 보이는 UX 버그가 있었음)
     scanRadar();
   }
 
@@ -6211,7 +6493,7 @@ function autoLoadAndScanRadar() {
       afterLoad();
     }).catch(function() {
       document.getElementById('radar-status').textContent = '불러오기 실패';
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-download mr-1"></i> 목록 불러오기'; }
+      resetScanBtn();
     });
     return;
   }
@@ -6224,7 +6506,7 @@ function autoLoadAndScanRadar() {
     afterLoad();
   }).catch(function() {
     document.getElementById('radar-status').textContent = '불러오기 실패';
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-download mr-1"></i> 목록 불러오기'; }
+    resetScanBtn();
   });
 }
 
@@ -6236,84 +6518,75 @@ function getRadarCurrentItems() {
   return radarWatchlist;
 }
 
-function loadRadarList() {
-  var btn = document.getElementById('radar-load-btn');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 불러오는 중...'; }
-  document.getElementById('radar-status').textContent = '목록을 불러오는 중...';
-
-  if (radarCurrentTab === 'watch') {
-    fetch('/api/radar/watchlist').then(function(r){ return r.json(); }).then(function(d) {
-      radarWatchlist = d.items || [];
-      document.getElementById('radar-status').textContent = '관심종목 ' + radarWatchlist.length + '개';
-      renderRadarTable();
-    }).catch(function() {
-      document.getElementById('radar-status').textContent = '불러오기 실패';
-    }).finally(function() {
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-download mr-1"></i> 목록 불러오기'; }
-    });
-    return;
-  }
-
-  var type = radarCurrentTab; // 'kr' or 'us'
-  fetch('/api/radar/universe?type=' + type).then(function(r){ return r.json(); }).then(function(d) {
-    if (type === 'kr') radarUniverseKr = d.items || [];
-    else               radarUniverseUs = d.items || [];
-    var src = d.source === 'fallback_kis_not_configured' ? ' (KIS 미설정 — 기본목록)' : d.source === 'kis' ? ' (KIS 실시간)' : '';
-    document.getElementById('radar-status').textContent = d.count + '개 종목' + src;
-    renderRadarTable();
-  }).catch(function() {
-    document.getElementById('radar-status').textContent = '불러오기 실패';
-  }).finally(function() {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-download mr-1"></i> 목록 불러오기'; }
-  });
-}
-
 function scanRadar() {
   var items = getRadarCurrentItems();
-  if (!items.length) { toast('먼저 목록을 불러오세요', 'info'); return; }
+  var scanBtn = document.getElementById('radar-scan-btn');
+  function resetBtn() {
+    if (scanBtn) { scanBtn.disabled = false; scanBtn.innerHTML = '<i class="fas fa-search mr-1"></i> 다시 스캔'; }
+  }
+  if (!items.length) { toast('먼저 목록을 불러오세요', 'info'); resetBtn(); return; }
   if (radarIsScanning) return;
 
   radarIsScanning = true;
+  // 스캔 진행 중 버튼은 계속 "스캔 중…" 상태 유지 (완료 시 아래 processBatch 종료에서 복원)
+  if (scanBtn) { scanBtn.disabled = true; scanBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> 스캔 중...'; }
   var progWrap = document.getElementById('radar-scan-progress');
   var progText  = document.getElementById('radar-scan-progress-text');
   if (progWrap) progWrap.style.display = '';
-  document.getElementById('radar-status').textContent = '스캔 중... (최대 50개씩 처리)';
+  document.getElementById('radar-status').textContent = '스캔 중... (최대 15개씩 처리)';
 
-  // 50개씩 분할 처리
+  // 15개씩 분할 처리 — Cloudflare Workers 30초 응답 한도 내에 각 배치가 완료되도록
+  //  (기존 50개는 Yahoo IP 차단 + 백엔드 batch 페이지네이션 비용으로 timeout 다발)
   var allTickers = items.map(function(i){ return i.ticker; });
   var batches = [];
-  for (var i = 0; i < allTickers.length; i += 50) {
-    batches.push(allTickers.slice(i, i + 50));
+  for (var i = 0; i < allTickers.length; i += 15) {
+    batches.push(allTickers.slice(i, i + 15));
   }
 
   var doneCount = 0;
   var total = allTickers.length;
 
-  function processBatch(idx) {
-    if (idx >= batches.length) {
-      radarIsScanning = false;
-      if (progWrap) progWrap.style.display = 'none';
-      document.getElementById('radar-status').textContent = '스캔 완료 (' + total + '개) · ' + new Date().toLocaleTimeString('ko-KR');
-      renderRadarTable();
-      return;
-    }
+  // [2026-04-23 최적화] 배치 병렬도 2로 상향 (기존 직렬 → 동시 2 요청)
+  //  · Cloudflare Workers는 요청별 독립 isolate라 서버 부담은 산술적으로 증가하지 않음
+  //  · 100 종목 기준 이론 시간 2배 단축 (이전: 7 × 14s ≈ 100s → 이후: ~4 라운드 × 14s ≈ 56s)
+  //  · Yahoo IP 차단은 Cloudflare 엣지 단위이므로 병렬도를 3 이상 올리면 차단 가중 우려 있어 2로 제한
+  var MAX_PARALLEL = 2;
+  var nextBatchIdx = 0;
+  var batchesDone  = 0;
+
+  function launchBatch() {
+    if (nextBatchIdx >= batches.length) return;
+    var myIdx = nextBatchIdx++;
     if (progText) progText.textContent = '스캔 중... ' + doneCount + ' / ' + total;
     fetch('/api/radar/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tickers: batches[idx], scores: true })
+      // [듀얼모드] 현재 선택된 모드를 백엔드에 전달 (breakout 기본, pullback 시 스텁 필드 부착)
+      body: JSON.stringify({ tickers: batches[myIdx], scores: true, scanMode: _radarScanMode })
     }).then(function(r){ return r.json(); }).then(function(d) {
       (d.results || []).forEach(function(r) {
         radarScanData[r.ticker] = r;
       });
-      doneCount += batches[idx].length;
+      doneCount += batches[myIdx].length;
       renderRadarTable();
-      processBatch(idx + 1);
-    }).catch(function() {
-      processBatch(idx + 1);
+    }).catch(function(){}).finally(function() {
+      batchesDone++;
+      if (progText) progText.textContent = '스캔 중... ' + doneCount + ' / ' + total;
+      if (batchesDone >= batches.length) {
+        radarIsScanning = false;
+        if (progWrap) progWrap.style.display = 'none';
+        document.getElementById('radar-status').textContent = '스캔 완료 (' + total + '개) · ' + new Date().toLocaleTimeString('ko-KR');
+        renderRadarTable();
+        resetBtn();  // 스캔 완료 → 버튼 복원
+        // [클라이언트 캐시] 30분 TTL로 저장 — 새로고침·탭 복귀 시 즉시 복원
+        saveRadarCache(radarCurrentTab, items, radarScanData, _radarScanMode);
+      } else {
+        launchBatch();  // 남은 배치가 있으면 다음 배치 즉시 시작
+      }
     });
   }
-  processBatch(0);
+  // 동시 MAX_PARALLEL개 배치를 병렬로 킥오프
+  for (var k = 0; k < MAX_PARALLEL; k++) launchBatch();
 }
 
 function renderRadarTable() {
@@ -6321,6 +6594,10 @@ function renderRadarTable() {
   var tbody  = document.getElementById('radar-table-body');
   if (!tbody) return;
 
+  // [듀얼모드] 눌림목 모드는 별도 렌더러로 분기 (돌파 모드는 기존 로직 100% 유지)
+  if (_radarScanMode === 'pullback') { return renderRadarTablePullback(items, tbody); }
+
+  // 컬럼 수가 모드별로 다르므로 colspan 동적 (돌파 10, 눌림목 8)
   if (!items.length) {
     tbody.innerHTML = '<tr><td colspan="10" class="text-center text-slate-400 py-10">' +
       '<i class="fas fa-satellite-dish block text-2xl mb-2 text-slate-300"></i>' +
@@ -6422,6 +6699,147 @@ function renderRadarTable() {
   }).join('');
 }
 
+// ────────────────────────────────────────────
+// [눌림목 모드] radar-main-panel row 렌더러
+// 백엔드 점수식 미구현 단계 — 신규 필드는 placeholder('-')로 표시
+// 향후 backend가 supportGapPct/prevDayVolRatio/turnaround/pullbackScore 채우면 자동 반영
+// ────────────────────────────────────────────
+function renderRadarTablePullback(items, tbody) {
+  if (!items || !items.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-400 py-10">' +
+      '<i class="fas fa-leaf block text-2xl mb-2 text-slate-300"></i>' +
+      '<span>목록 불러오기 → 스캔하면 눌림목 점수가 표시돼요</span></td></tr>';
+    return;
+  }
+  items = sortItems('radar', items);
+
+  tbody.innerHTML = items.map(function(item, idx) {
+    var scan    = radarScanData[item.ticker] || {};
+    var hasScan = scan.curPrice != null;
+
+    var curPriceDisp = hasScan && scan.curPrice
+      ? '₩' + Math.round(scan.curPrice).toLocaleString('ko-KR')
+      : (item.price ? '₩' + Math.round(item.price).toLocaleString('ko-KR') : '-');
+
+    // 눌림 총점 (backend pullbackScore 필드) + 85점 이상 반등 타점 뱃지
+    //  - pullbackScore=null → yahoo_fail 등으로 데이터 자체가 없음 → "데이터 없음"
+    //  - pullbackScore=0 AND filterPassed=false → 필터 탈락 이유를 tooltip으로 노출
+    var pbScoreHtml = '<span style="color:#94a3b8;font-size:11px;" title="Yahoo 데이터 조회 실패 — 다음 재스캔 시 복구될 수 있어요">데이터 없음</span>';
+    if (scan.pullbackScore != null) {
+      var ps = scan.pullbackScore;
+      var psc = ps >= 85 ? '#16a34a' : ps >= 70 ? '#22c55e' : ps >= 40 ? '#d97706' : '#94a3b8';
+      var scoreTitle = '';
+      if (ps === 0 && scan.filterPassed === false && scan.filterReason) {
+        scoreTitle = ' title="필터 탈락: ' + scan.filterReason + '"';
+      } else if (ps === 0 && scan.filterPassed === true) {
+        scoreTitle = ' title="필터는 통과했지만 부분 점수(지지선/턴어라운드/거래량)가 모두 0점"';
+      }
+      pbScoreHtml = '<span' + scoreTitle + ' style="font-weight:700;color:' + psc + ';font-size:13px;">' + ps + '</span>';
+      if (scan.badge) {
+        pbScoreHtml += '<div style="font-size:10px;color:#16a34a;font-weight:700;margin-top:1px;">' + scan.badge + '</div>';
+      }
+    }
+
+    // 지지선 이격% (0~1.5% = 진초록, 1.5~3% = 황, 그 외 = 회색)
+    //  - '+24.2%(일봉20선)' 한 줄 표기: supportType의 공백 제거('일봉 20선' → '일봉20선')
+    var sgHtml = '<span style="color:#94a3b8;font-size:11px;">-</span>';
+    if (scan.supportGapPct != null) {
+      var sg = scan.supportGapPct;
+      var sgc = (sg >= 0 && sg <= 1.5) ? '#16a34a' : (sg > 1.5 && sg <= 3.0) ? '#d97706' : '#94a3b8';
+      var sgTitle = scan.supportType ? ('지지선: ' + scan.supportType) : '';
+      var sgLabel = scan.supportType ? ('(' + scan.supportType.replace(/\s+/g, '') + ')') : '';
+      sgHtml = '<span title="' + sgTitle + '" style="color:' + sgc + ';font-size:12px;font-weight:700;white-space:nowrap;">'
+             + (sg >= 0 ? '+' : '') + sg.toFixed(1) + '%'
+             + '<span style="font-size:10px;color:#64748b;font-weight:600;margin-left:2px;">' + sgLabel + '</span>'
+             + '</span>';
+    }
+
+    // 전일 거래량 가뭄 (< 0.5 = 진초록, < 0.75 = 황, 이상 = 회색)
+    var pvHtml = '<span style="color:#94a3b8;font-size:11px;">-</span>';
+    if (scan.prevDayVolRatio != null) {
+      var pv = scan.prevDayVolRatio;
+      var pvc = pv < 0.5 ? '#16a34a' : pv < 0.75 ? '#d97706' : '#94a3b8';
+      pvHtml = '<span style="color:' + pvc + ';font-size:12px;font-weight:700;">' + pv.toFixed(2) + 'x</span>';
+    }
+
+    // 턴어라운드 (양봉 반등 / 양봉 횡보 / 음봉 하락)
+    var taHtml = '<span style="color:#94a3b8;font-size:11px;">-</span>';
+    var taState = scan.turnaroundState || scan.turnaround;
+    if (taState) {
+      var s = String(taState);
+      if (s === '양봉 반등') {
+        taHtml = '<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉 반등</span>';
+      } else if (s === '양봉 횡보') {
+        taHtml = '<span style="background:#fff7ed;color:#ea580c;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉 횡보</span>';
+      } else if (s === '음봉 하락') {
+        taHtml = '<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▼ 음봉 하락</span>';
+      } else if (s === '양봉' || s === 'bull') {
+        taHtml = '<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉</span>';
+      } else if (s === '음봉' || s === 'bear') {
+        taHtml = '<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▼ 음봉</span>';
+      } else {
+        taHtml = '<span style="color:#64748b;font-size:11px;">' + s + '</span>';
+      }
+    }
+
+    // 관심종목 버튼 (돌파 모드와 동일 로직)
+    var inWatch = radarWatchlist.some(function(w){ return w.ticker === item.ticker; });
+    var watchBtn = '';
+    if (radarCurrentTab === 'watch') {
+      watchBtn = '<button onclick="removeRadarFromWatchlist(\'' + item.ticker.replace(/'/g,"\\'") + '\')" class="radar-del-btn">✕</button>';
+    } else if (inWatch) {
+      watchBtn = '<span style="color:#f59e0b;font-size:13px;">★</span>';
+    } else {
+      var safeName   = (item.name || '').replace(/'/g,"\\'");
+      var safeTicker = item.ticker.replace(/'/g,"\\'");
+      var mkt = radarCurrentTab === 'kr' ? 'KR' : 'US';
+      watchBtn = '<button onclick="addRadarToWatchlist(\'' + safeName + '\',\'' + safeTicker + '\',\'' + mkt + '\')" class="radar-add-btn">☆</button>';
+    }
+
+    return '<tr>' +
+      '<td class="text-center text-xs text-slate-400">' + (item.rank || idx+1) + '</td>' +
+      '<td style="max-width:0;"><div class="font-medium text-slate-800" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">' + (item.name || '') + '</div>' +
+        '<div class="font-mono text-xs text-slate-400" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + item.ticker + '</div></td>' +
+      '<td class="text-right" style="font-size:11px;">' + curPriceDisp + '</td>' +
+      '<td class="text-center">' + pbScoreHtml + '</td>' +
+      '<td class="text-center">' + sgHtml      + '</td>' +
+      '<td class="text-center">' + pvHtml      + '</td>' +
+      '<td class="text-center">' + taHtml      + '</td>' +
+      '<td class="text-center">' + watchBtn    + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+// 턴어라운드란? 가이드 팝업 — 양봉/음봉으로 매수 타점을 판정하는 방법 설명
+var _turnaroundGuideEl = null;
+function toggleTurnaroundGuide(e) {
+  e.stopPropagation();
+  if (_turnaroundGuideEl) { _turnaroundGuideEl.remove(); _turnaroundGuideEl = null; return; }
+  var popup = document.createElement('div');
+  popup.style.cssText = 'position:fixed;z-index:9999;background:white;border:1.5px solid #e2e8f0;border-radius:14px;padding:16px 18px;box-shadow:0 8px 30px rgba(0,0,0,.12);max-width:320px;font-size:13px;line-height:1.6;';
+  popup.innerHTML =
+    '<div style="font-weight:800;color:#1e293b;margin-bottom:8px;font-size:14px;">🔄 턴어라운드란?</div>'
+    + '<div style="color:#475569;">눌림목(주가가 잠시 쉬는 구간)에서 <b>다시 위로 방향을 트는 첫 신호</b>를 잡는 거예요.</div>'
+    + '<div style="margin-top:10px;color:#475569;font-size:12px;">오늘 시가 vs 현재가, 어제 종가 vs 현재가 — 두 가지를 함께 보고 매수 타점을 판정합니다.</div>'
+    + '<div style="margin-top:10px;display:grid;gap:6px;">'
+      + '<div style="background:#fef2f2;border-radius:8px;padding:8px 10px;"><span style="color:#dc2626;font-weight:800;">▲ 양봉 반등 (30점)</span><div style="color:#64748b;font-size:11px;margin-top:2px;">현재가 > 오늘 시가 <b>그리고</b> 현재가 > 어제 종가<br/>→ 진짜 반등 시작! 가장 좋은 매수 신호</div></div>'
+      + '<div style="background:#fff7ed;border-radius:8px;padding:8px 10px;"><span style="color:#ea580c;font-weight:800;">▲ 양봉 횡보 (15점)</span><div style="color:#64748b;font-size:11px;margin-top:2px;">현재가 > 오늘 시가지만, 어제 종가는 못 넘음<br/>→ 반등 시도 중 — 한 박자 더 지켜보기</div></div>'
+      + '<div style="background:#eff6ff;border-radius:8px;padding:8px 10px;"><span style="color:#2563eb;font-weight:800;">▼ 음봉 하락 (0점)</span><div style="color:#64748b;font-size:11px;margin-top:2px;">현재가 ≤ 오늘 시가<br/>→ 아직 하락 중 — 매수 보류</div></div>'
+    + '</div>'
+    + '<div style="margin-top:10px;color:#94a3b8;font-size:11px;">💡 장중 실시간 계산: "오늘 종가"는 지금 이 순간의 현재가로 간주해요.</div>'
+    + '<div style="text-align:right;margin-top:10px;"><button onclick="this.closest(\'div[style*=fixed]\').remove();_turnaroundGuideEl=null;" style="background:#f1f5f9;border:none;border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer;color:#64748b;">닫기</button></div>';
+  var rect = e.target.getBoundingClientRect();
+  popup.style.top  = (rect.bottom + 8) + 'px';
+  popup.style.left = Math.max(8, rect.left - 220) + 'px';
+  document.body.appendChild(popup);
+  _turnaroundGuideEl = popup;
+  setTimeout(function() {
+    document.addEventListener('click', function handler(ev) {
+      if (!popup.contains(ev.target)) { popup.remove(); _turnaroundGuideEl = null; document.removeEventListener('click', handler); }
+    });
+  }, 10);
+}
+
 // 거리% 가이드 팝업
 var _radarDistGuideEl = null;
 function toggleRadarDistGuide(e) {
@@ -6494,6 +6912,10 @@ function renderCoinTop50Table(data) {
   var tbody = document.getElementById('coin-top50-table-body');
   if (!tbody) return;
   var items = data && data.items;
+
+  // [듀얼모드] 눌림목 모드는 별도 렌더러로 분기 (돌파 로직 100% 보존)
+  if (_radarScanMode === 'pullback') { return renderCoinTop50TablePullback(items, tbody); }
+
   if (!items || !items.length) {
     tbody.innerHTML = '<tr><td colspan="10" class="text-center text-slate-400 py-10">' +
       '<i class="fas fa-coins block text-2xl mb-2 text-slate-300"></i>' +
@@ -6569,6 +6991,101 @@ function renderCoinTop50Table(data) {
       '<td class="text-center">' + wkHtml    + '</td>' +
       '<td class="text-center">' + moHtml    + '</td>' +
       '<td class="text-center">' + watchBtn  + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+// ────────────────────────────────────────────
+// [눌림목 모드] coin-top50-panel row 렌더러
+// radar pullback 렌더러와 동일 스키마 (8열)
+// 관심종목 버튼은 UPBIT 마켓으로 추가
+// ────────────────────────────────────────────
+function renderCoinTop50TablePullback(items, tbody) {
+  if (!items || !items.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-400 py-10">' +
+      '<i class="fas fa-leaf block text-2xl mb-2 text-slate-300"></i>' +
+      '<span>재스캔을 누르면 눌림목 점수가 표시돼요</span></td></tr>';
+    return;
+  }
+  items = sortItems('coin', items);
+
+  tbody.innerHTML = items.map(function(item) {
+    var priceStr = item.price ? '₩' + Math.round(item.price).toLocaleString('ko-KR') : '-';
+
+    // 눌림 총점 + 85점 이상 반등 타점 뱃지
+    var pbScoreHtml = '<span style="color:#94a3b8;font-size:11px;" title="일봉 데이터 조회 실패 — 재스캔 시 복구될 수 있어요">데이터 없음</span>';
+    if (item.pullbackScore != null) {
+      var ps = item.pullbackScore;
+      var psc = ps >= 85 ? '#16a34a' : ps >= 70 ? '#22c55e' : ps >= 40 ? '#d97706' : '#94a3b8';
+      var scoreTitle = '';
+      if (ps === 0 && item.filterPassed === false) {
+        scoreTitle = ' title="필터 탈락 — 눌림목 조건을 만족하지 못함"';
+      } else if (ps === 0 && item.filterPassed === true) {
+        scoreTitle = ' title="필터는 통과했지만 부분 점수(지지선/턴어라운드/거래량)가 모두 0점"';
+      }
+      pbScoreHtml = '<span' + scoreTitle + ' style="font-weight:700;color:' + psc + ';font-size:13px;">' + ps + '</span>';
+      if (item.badge) {
+        pbScoreHtml += '<div style="font-size:10px;color:#16a34a;font-weight:700;margin-top:1px;">' + item.badge + '</div>';
+      }
+    }
+
+    // 지지선 이격%
+    var sgHtml = '<span style="color:#94a3b8;font-size:11px;">-</span>';
+    if (item.supportGapPct != null) {
+      var sg = item.supportGapPct;
+      var sgc = (sg >= 0 && sg <= 1.5) ? '#16a34a' : (sg > 1.5 && sg <= 3.0) ? '#d97706' : '#94a3b8';
+      var sgTitle = item.supportType ? ('지지선: ' + item.supportType) : '';
+      var sgLabel = item.supportType ? ('(' + item.supportType.replace(/\s+/g, '') + ')') : '';
+      sgHtml = '<span title="' + sgTitle + '" style="color:' + sgc + ';font-size:12px;font-weight:700;white-space:nowrap;">'
+             + (sg >= 0 ? '+' : '') + sg.toFixed(1) + '%'
+             + '<span style="font-size:10px;color:#64748b;font-weight:600;margin-left:2px;">' + sgLabel + '</span>'
+             + '</span>';
+    }
+
+    // 전일 거래량 가뭄
+    var pvHtml = '<span style="color:#94a3b8;font-size:11px;">-</span>';
+    if (item.prevDayVolRatio != null) {
+      var pv = item.prevDayVolRatio;
+      var pvc = pv < 0.5 ? '#16a34a' : pv < 0.75 ? '#d97706' : '#94a3b8';
+      pvHtml = '<span style="color:' + pvc + ';font-size:12px;font-weight:700;">' + pv.toFixed(2) + 'x</span>';
+    }
+
+    // 턴어라운드
+    var taHtml = '<span style="color:#94a3b8;font-size:11px;">-</span>';
+    var taState = item.turnaroundState || item.turnaround;
+    if (taState) {
+      var ts = String(taState);
+      if (ts === '양봉 반등') {
+        taHtml = '<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉 반등</span>';
+      } else if (ts === '양봉 횡보') {
+        taHtml = '<span style="background:#fff7ed;color:#ea580c;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉 횡보</span>';
+      } else if (ts === '음봉 하락') {
+        taHtml = '<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▼ 음봉 하락</span>';
+      } else if (ts === '양봉' || ts === 'bull') {
+        taHtml = '<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉</span>';
+      } else if (ts === '음봉' || ts === 'bear') {
+        taHtml = '<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▼ 음봉</span>';
+      } else {
+        taHtml = '<span style="color:#64748b;font-size:11px;">' + ts + '</span>';
+      }
+    }
+
+    // 관심종목 버튼 (돌파 모드와 동일 — UPBIT 마켓)
+    var inWatch = radarWatchlist.some(function(w){ return w.ticker === item.ticker; });
+    var watchBtn = inWatch
+      ? '<span style="color:#f59e0b;font-size:13px;">★</span>'
+      : '<button onclick="addRadarToWatchlist(\'' + (item.name||'').replace(/'/g,"\\'") + '\',\'' + item.ticker.replace(/'/g,"\\'") + '\',\'UPBIT\')" class="radar-add-btn">☆</button>';
+
+    return '<tr>' +
+      '<td class="text-center text-xs text-slate-400">' + item.rank + '</td>' +
+      '<td style="max-width:0;"><div class="font-medium text-slate-800" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">' + (item.name || '') + '</div>' +
+        '<div class="font-mono text-xs text-slate-400" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + item.ticker + '</div></td>' +
+      '<td class="text-right" style="font-size:11px;">' + priceStr + '</td>' +
+      '<td class="text-center">' + pbScoreHtml + '</td>' +
+      '<td class="text-center">' + sgHtml      + '</td>' +
+      '<td class="text-center">' + pvHtml      + '</td>' +
+      '<td class="text-center">' + taHtml      + '</td>' +
+      '<td class="text-center">' + watchBtn    + '</td>' +
       '</tr>';
   }).join('');
 }
@@ -7819,7 +8336,8 @@ function loadQuantTop50() {
   if (meta) meta.textContent = '데이터 로딩 중...';
   if (prog) prog.style.display = '';
 
-  fetch('/api/quant-top50')
+  // [듀얼모드] scanMode 쿼리 파라미터로 현재 모드 전달
+  fetch('/api/quant-top50?scanMode=' + encodeURIComponent(_radarScanMode))
     .then(function(r){ return r.json(); })
     .then(function(d) {
       quantData   = d;
@@ -7852,7 +8370,8 @@ function refreshQuantTop50() {
   if (prog) prog.style.display = '';
   if (meta) meta.textContent = '';
 
-  fetch('/api/quant-top50?refresh=1')
+  // [듀얼모드] scanMode 쿼리 파라미터로 현재 모드 전달
+  fetch('/api/quant-top50?refresh=1&scanMode=' + encodeURIComponent(_radarScanMode))
     .then(function(r){ return r.json(); })
     .then(function(d) {
       quantData   = d;
@@ -7876,6 +8395,10 @@ function refreshQuantTop50() {
 function renderQuantTable(items) {
   var tbody = document.getElementById('quant-table-body');
   if (!tbody) return;
+
+  // [듀얼모드] 눌림목 모드는 별도 렌더러 (돌파 로직 보존)
+  if (_radarScanMode === 'pullback') { return renderQuantTablePullback(items, tbody); }
+
   if (!items || items.length === 0) {
     tbody.innerHTML = '<tr><td colspan="9" class="text-center text-slate-400 py-10">'
       + '<i class="fas fa-bolt block text-2xl mb-2 text-slate-300"></i>'
@@ -7950,6 +8473,109 @@ function renderQuantTable(items) {
       + '<td class="text-center">' + volHtml + '</td>'
       + '<td class="text-center">' + wsHtml + '</td>'
       + '<td class="text-center">' + msHtml + '</td>'
+      + '<td class="text-center" onclick="event.stopPropagation();">' + watchBtn + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ────────────────────────────────────────────
+// [눌림목 모드] quant-panel row 렌더러
+// 백엔드 점수식 미구현 단계 — 신규 필드 placeholder('-' / '준비중')
+// ────────────────────────────────────────────
+function renderQuantTablePullback(items, tbody) {
+  if (!items || items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-slate-400 py-10">'
+      + '<i class="fas fa-leaf block text-2xl mb-2 text-slate-300"></i>'
+      + '<span>퀀트 재스캔 → 눌림목 점수 산출 (백엔드 준비 후 활성화)</span></td></tr>';
+    return;
+  }
+  items = sortItems('quant', items);
+
+  tbody.innerHTML = items.map(function(item, idx) {
+    var priceStr = '₩' + Math.round(item.price).toLocaleString('ko-KR');
+
+    // 눌림 총점 + 85점 이상 반등 타점 뱃지
+    var pbScoreHtml = '<span style="color:#94a3b8;font-size:12px;">준비중</span>';
+    if (item.pullbackScore != null) {
+      var ps = item.pullbackScore;
+      var psc = ps >= 85 ? '#16a34a' : ps >= 70 ? '#22c55e' : ps >= 40 ? '#d97706' : '#475569';
+      pbScoreHtml = '<span style="font-weight:800;font-size:14px;color:' + psc + ';">' + ps + '</span>'
+                  + '<span style="font-size:10px;color:#94a3b8;">/100</span>';
+      if (item.badge) {
+        pbScoreHtml += '<div style="font-size:10px;color:#16a34a;font-weight:700;margin-top:1px;">' + item.badge + '</div>';
+      }
+    }
+
+    // 지지선 이격% (0~1.5% = 진초록, 1.5~3% = 황)
+    //  - '+24.2%(일봉20선)' 한 줄 표기: supportType의 공백 제거
+    var sgHtml = '<span style="color:#94a3b8;font-size:12px;">-</span>';
+    if (item.supportGapPct != null) {
+      var sg = item.supportGapPct;
+      var sgc = (sg >= 0 && sg <= 1.5) ? '#16a34a' : (sg > 1.5 && sg <= 3.0) ? '#d97706' : '#94a3b8';
+      var sgTitle = item.supportType ? ('지지선: ' + item.supportType) : '';
+      var sgLabel = item.supportType ? ('(' + item.supportType.replace(/\s+/g, '') + ')') : '';
+      sgHtml = '<span title="' + sgTitle + '" style="color:' + sgc + ';font-size:12px;font-weight:700;white-space:nowrap;">'
+             + (sg >= 0 ? '+' : '') + sg.toFixed(1) + '%'
+             + '<span style="font-size:10px;color:#64748b;font-weight:600;margin-left:2px;">' + sgLabel + '</span>'
+             + '</span>';
+    }
+
+    // 전일 거래량 가뭄 (< 0.5 = 진초록, < 0.75 = 황)
+    var pvHtml = '<span style="color:#94a3b8;font-size:12px;">-</span>';
+    if (item.prevDayVolRatio != null) {
+      var pv = item.prevDayVolRatio;
+      var pvc = pv < 0.5 ? '#16a34a' : pv < 0.75 ? '#d97706' : '#64748b';
+      pvHtml = '<span style="color:' + pvc + ';font-size:12px;font-weight:700;">' + pv.toFixed(2) + 'x</span>';
+    }
+
+    // 턴어라운드 (양봉 반등 / 양봉 횡보 / 음봉 하락)
+    var taHtml = '<span style="color:#94a3b8;font-size:12px;">-</span>';
+    var taState = item.turnaroundState || item.turnaround;
+    if (taState) {
+      var s = String(taState);
+      if (s === '양봉 반등') {
+        taHtml = '<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉 반등</span>';
+      } else if (s === '양봉 횡보') {
+        taHtml = '<span style="background:#fff7ed;color:#ea580c;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉 횡보</span>';
+      } else if (s === '음봉 하락') {
+        taHtml = '<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▼ 음봉 하락</span>';
+      } else if (s === '양봉' || s === 'bull') {
+        taHtml = '<span style="background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▲ 양봉</span>';
+      } else if (s === '음봉' || s === 'bear') {
+        taHtml = '<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;">▼ 음봉</span>';
+      } else {
+        taHtml = '<span style="color:#64748b;font-size:11px;">' + s + '</span>';
+      }
+    }
+
+    // 시장 뱃지 (돌파 모드와 동일)
+    var isCoinItem = item.market === 'coin' || /^KRW-/.test(item.ticker);
+    var marketBadge = isCoinItem
+      ? '<span style="background:#fef9c3;color:#854d0e;font-size:9px;padding:1px 5px;border-radius:4px;flex-shrink:0;margin-left:3px;">UPBIT</span>'
+      : (item.market === 'us'
+          ? '<span style="background:#eff6ff;color:#2563eb;font-size:9px;padding:1px 5px;border-radius:4px;flex-shrink:0;margin-left:3px;">US</span>'
+          : '<span style="background:#f0fdf4;color:#16a34a;font-size:9px;padding:1px 5px;border-radius:4px;flex-shrink:0;margin-left:3px;">KR</span>');
+
+    var inWatch = radarWatchlist.some(function(w){ return w.ticker === item.ticker; });
+    var mkt     = isCoinItem ? 'UPBIT' : (item.market === 'us' ? 'US' : 'KR');
+    var safeName   = (item.name||'').replace(/'/g,"\\'");
+    var safeTicker = item.ticker.replace(/'/g,"\\'");
+    var watchBtn = inWatch
+      ? '<span style="color:#f59e0b;font-size:13px;">★</span>'
+      : '<button onclick="addRadarToWatchlist(\'' + safeName + '\',\'' + safeTicker + '\',\'' + mkt + '\')" class="radar-add-btn">☆</button>';
+
+    return '<tr style="cursor:pointer;" onclick="openQuantDrawer(' + JSON.stringify(item).replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,"'") + ')" onmouseenter="this.style.background=\'#f8fafc\'" onmouseleave="this.style.background=\'\'">'
+      + '<td class="text-center text-xs text-slate-400">' + item.rank + '</td>'
+      + '<td style="max-width:0;"><div class="font-medium text-slate-800" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(item.name) + '</div>'
+        + '<div style="display:flex;align-items:center;gap:3px;flex-wrap:nowrap;">'
+          + '<span class="font-mono text-xs text-slate-400" style="flex-shrink:0;">' + esc(item.ticker) + '</span>'
+          + marketBadge
+        + '</div></td>'
+      + '<td class="text-right text-sm">' + priceStr + '</td>'
+      + '<td class="text-center">' + pbScoreHtml + '</td>'
+      + '<td class="text-center">' + sgHtml      + '</td>'
+      + '<td class="text-center">' + pvHtml      + '</td>'
+      + '<td class="text-center">' + taHtml      + '</td>'
       + '<td class="text-center" onclick="event.stopPropagation();">' + watchBtn + '</td>'
       + '</tr>';
   }).join('');

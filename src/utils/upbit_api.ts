@@ -133,6 +133,83 @@ export async function fetchUpbitWeeklyCandles(
 }
 
 // ───────────────────────────────────────────────────
+// 일봉 캔들 조회 (퀀트 스캔용: 월봉 10이평·주봉 10이평·하이브리드 거래량 전체 재가공)
+// 업비트 퍼블릭 API: GET https://api.upbit.com/v1/candles/days
+// 코인은 24/7 거래라 "영업일" 개념이 없으므로 캘린더 일자 기준.
+//
+// 업비트 제약: 한 번에 최대 200개 — 월봉 10이평(약 300일 필요)을 위해 페이징으로 이어받음.
+// 기본 400개(≈13개월) 요청 → 내부적으로 200개씩 최대 2회 호출.
+// `to` 파라미터로 과거 페이지를 역방향으로 이어받음. UTC 시각 기준.
+// ───────────────────────────────────────────────────
+
+interface UpbitDayCandle {
+  market: string
+  candle_date_time_utc: string    // 'YYYY-MM-DDTHH:mm:ss' (UTC) — 다음 페이지 'to' 파라미터 기준
+  candle_date_time_kst: string    // 'YYYY-MM-DDTHH:mm:ss' (KST) — 날짜 표시용
+  opening_price?: number          // 해당 일의 시가
+  high_price?:    number          // 해당 일의 고가
+  trade_price: number             // 해당 일의 종가
+  candle_acc_trade_volume: number // 해당 일의 누적 거래량 (코인 수량)
+}
+
+export async function fetchUpbitDailyCandles(
+  market: string,
+  count = 400
+): Promise<Array<{ date: string; close: number; volume: number; open?: number; high?: number }>> {
+  const mkt = encodeURIComponent(market.toUpperCase())
+  const collected: UpbitDayCandle[] = []
+  let to: string | undefined
+  const seenDates = new Set<string>()  // 페이지 경계 중복 방지
+  let safetyPages = 0
+
+  while (collected.length < count && safetyPages < 5) {
+    safetyPages++
+    const need = Math.min(200, count - collected.length)
+    let url = `https://api.upbit.com/v1/candles/days?market=${mkt}&count=${need}`
+    if (to) url += `&to=${encodeURIComponent(to)}`
+
+    try {
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } })
+      if (!res.ok) break
+      const json = await res.json() as UpbitDayCandle[]
+      if (!Array.isArray(json) || json.length === 0) break
+
+      for (const c of json) {
+        const dateKey = c.candle_date_time_kst?.slice(0, 10)
+        if (!dateKey || seenDates.has(dateKey)) continue
+        seenDates.add(dateKey)
+        collected.push(c)
+      }
+      if (json.length < need) break  // 더 과거 데이터 없음
+
+      // 다음 페이지: 방금 받은 가장 오래된 바의 UTC 시각 - 1초 (배타적으로 사용)
+      const oldest = json[json.length - 1]
+      if (!oldest?.candle_date_time_utc) break
+      const tDate = new Date(oldest.candle_date_time_utc + 'Z')
+      tDate.setUTCSeconds(tDate.getUTCSeconds() - 1)
+      to = tDate.toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+      // 업비트 레이트리밋 배려 (분당 600건 제한)
+      if (collected.length < count) await new Promise(r => setTimeout(r, 150))
+    } catch (_) { break }
+  }
+
+  return collected
+    .filter(c => c.trade_price > 0)
+    .map(c => {
+      const bar: { date: string; close: number; volume: number; open?: number; high?: number } = {
+        date:   c.candle_date_time_kst.slice(0, 10),  // 'YYYY-MM-DD'
+        close:  c.trade_price,
+        volume: c.candle_acc_trade_volume ?? 0,
+      }
+      if (typeof c.opening_price === 'number' && c.opening_price > 0) bar.open = c.opening_price
+      if (typeof c.high_price    === 'number' && c.high_price    > 0) bar.high = c.high_price
+      return bar
+    })
+    .reverse()  // 업비트는 최신순 → 오름차순
+}
+
+// ───────────────────────────────────────────────────
 // 주봉 기반 MA10/MA20 + 거래량 계산 헬퍼 (퀀트 스코어링용)
 // fetchMaWeeklyData 와 동일한 반환 구조 (stocks/coins 공통 스코어 함수 재사용)
 // ───────────────────────────────────────────────────
